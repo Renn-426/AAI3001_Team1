@@ -19,9 +19,12 @@ modules/
 Create `.streamlit/secrets.toml` (do NOT commit it; add to .gitignore):
 ```
 TELEGRAM_BOT_TOKEN = "123456:ABC..."
-TELEGRAM_CHAT_ID = "123456789"
 ```
 On Streamlit Community Cloud, paste the same content in App settings → Secrets.
+
+## Telegram Bot
+Create a camera in the side bar and generate link. 
+Redirect to the link and it will take you to telegram bot. Press /start to receive notifications.
 
 ## Integration points for teammates
 - **Spatial detection / modelling**: subclass `BaseClassifier` in `modules/classifier.py`,
