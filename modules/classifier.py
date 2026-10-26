@@ -1,7 +1,7 @@
-"""Danger-level classification base.
+"""Shared result types and detector -> spatial -> UI integration.
 
-The modelling / spatial-detection teammates only need to subclass
-`BaseClassifier` and implement `predict()`. The UI never changes.
+Tze owns detector.py; Ayumi & Nic own spatial.py. SafetyClassifier connects
+their interfaces without changing the UI's predict() contract.
 """
 from __future__ import annotations
 
@@ -9,8 +9,13 @@ import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from modules.detector import BaseDetector
+    from modules.spatial import BaseSpatialAnalyzer
 
 
 class DangerLevel(IntEnum):
@@ -65,14 +70,30 @@ class BaseClassifier(ABC):
         """frame_bgr: HxWx3 uint8 array (OpenCV BGR order)."""
 
 
-class DummyClassifier(BaseClassifier):
-    """Placeholder that returns random scores so the UI can be built/tested.
+class SafetyClassifier(BaseClassifier):
+    """Connect an implemented detector and spatial analyzer to the UI."""
 
-    Replace with the real model, e.g.:
-        class MyModelClassifier(BaseClassifier):
-            def __init__(self): self.model = load_model("weights.pt")
-            def predict(self, frame_bgr): ...
-    """
+    def __init__(
+        self, detector: BaseDetector, spatial: BaseSpatialAnalyzer
+    ) -> None:
+        self.detector = detector
+        self.spatial = spatial
+
+    def predict(self, frame_bgr: np.ndarray) -> ClassificationResult:
+        detections = self.detector.detect(frame_bgr)
+        score, reason = self.spatial.assess(detections, frame_bgr.shape[:2])
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("Spatial danger score must be between 0 and 1.")
+        return ClassificationResult(
+            level=score_to_level(score),
+            score=score,
+            detections=detections,
+            reason=reason,
+        )
+
+
+class DummyClassifier(BaseClassifier):
+    """Random scores for UI development while teammates implement the pipeline."""
 
     def predict(self, frame_bgr: np.ndarray) -> ClassificationResult:
         score = random.random() ** 2          # skewed towards safe
@@ -85,5 +106,8 @@ class DummyClassifier(BaseClassifier):
 
 
 def get_classifier() -> BaseClassifier:
-    """Single place to swap in the real classifier."""
+    """Keep demo mode until detector/spatial implementations are ready.
+
+    Then construct SafetyClassifier here (see README for the wiring).
+    """
     return DummyClassifier()
