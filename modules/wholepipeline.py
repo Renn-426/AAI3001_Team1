@@ -40,7 +40,7 @@ except ImportError:
         confidence: float
         box: tuple[float, float, float, float]
 
-from spatial_analyzer import SpatialAnalyzer, CHILD_LABELS, DANGER_WEIGHTS
+from spatial import SpatialAnalyzer, CHILD_LABELS, DANGER_WEIGHTS
 
 ZONE_COLORS = {
     "CRITICAL": (0, 0, 255),

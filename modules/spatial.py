@@ -16,6 +16,10 @@ except ImportError:
         label: str
         confidence: float
         box: tuple[float, float, float, float]
+        depth: float | None = None  # optional: 0-1 normalized relative depth
+        # (1 = closest to camera, 0 = farthest). Leave as None if you're
+        # not using depth estimation - everything still works, just
+        # falls back to planar-only distance.
 
 # ---------------------------------------------------------------------------
 # ASSUMPTIONS ABOUT Detection — adjust these if your actual class differs.
@@ -72,6 +76,15 @@ ZONE_THRESHOLDS = {
     "CAUTION": 3.0,
 }
 MAX_NORM_DIST = ZONE_THRESHOLDS["CAUTION"]  # beyond this, risk score is 0
+
+# How much a depth mismatch (two boxes close in pixels but at very
+# different distances from the camera) inflates the effective distance.
+# depth is expected 0-1 normalized (1 = closest to camera). A depth_diff
+# of e.g. 0.3 gets multiplied by this weight and combined with the planar
+# distance via sqrt(planar^2 + (weight*depth_diff)^2) - i.e. it behaves
+# as an extra "distance" axis, same units as norm_dist. Tune by watching
+# whether foreground/background false positives go away on your footage.
+DEPTH_DIFF_WEIGHT = 3.0
 
 
 def _label(det: Detection) -> str:
@@ -147,6 +160,8 @@ class SpatialAnalyzer(BaseSpatialAnalyzer):
         best_score = 0.0
         best_reason = "No hazardous objects within risk range."
 
+        child_depth = getattr(child, "depth", None)
+
         for hz in hazards:
             hz_box = _box_xyxy(hz)
             hz_label = _label(hz)
@@ -154,16 +169,28 @@ class SpatialAnalyzer(BaseSpatialAnalyzer):
             dist_px = _edge_distance(child_box, hz_box)
             norm_dist = dist_px / child_height
 
+            # --- depth-aware adjustment (only if both have depth values) ---
+            hz_depth = getattr(hz, "depth", None)
+            depth_note = ""
+            if child_depth is not None and hz_depth is not None:
+                depth_diff = abs(child_depth - hz_depth)
+                effective_dist = math.sqrt(
+                    norm_dist ** 2 + (DEPTH_DIFF_WEIGHT * depth_diff) ** 2
+                )
+                depth_note = f", depth diff {depth_diff:.2f}"
+            else:
+                effective_dist = norm_dist  # fall back to planar-only
+
             weight = DANGER_WEIGHTS.get(hz_label, DEFAULT_HAZARD_WEIGHT)
-            proximity = max(0.0, 1.0 - (norm_dist / MAX_NORM_DIST))
+            proximity = max(0.0, 1.0 - (effective_dist / MAX_NORM_DIST))
             score = proximity * weight
 
             if score > best_score:
-                zone = _zone(norm_dist)
+                zone = _zone(effective_dist)
                 best_score = score
                 best_reason = (
                     f"{hz.label} detected at {zone} proximity to child "
-                    f"(~{norm_dist:.2f}x child height away, "
+                    f"(~{effective_dist:.2f}x child height away{depth_note}, "
                     f"hazard confidence {hz.confidence:.2f})."
                 )
 

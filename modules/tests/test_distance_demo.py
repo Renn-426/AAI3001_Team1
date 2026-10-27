@@ -8,7 +8,9 @@ checking the geometry before any detector is plugged in.
 Run:
     python test_distance_demo.py
 """
-
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from spatial import (
     _box_xyxy, _box_height, _edge_distance, _zone,
     SpatialAnalyzer, Detection, DANGER_WEIGHTS, MAX_NORM_DIST,
