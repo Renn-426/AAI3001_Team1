@@ -99,7 +99,8 @@ Home (one household, private home key)
    page URL, so bookmark the page (or keep the key) to reopen it.
 2. Add one room per camera location.
 3. Send the invite link to caregivers. One tap joins **all** rooms of the home.
-4. In **Settings → This camera**, choose which room this camera is in.
+4. On **Live Monitoring**, under Caregiver alerts, pick this camera's room and
+   switch on **Send Telegram alerts**.
 5. Use **Send test message** / **Send test alert** in the Telegram tab to check delivery.
 
 In Telegram, members can use `/rooms` to mute or unmute single rooms, or leave a
@@ -114,8 +115,9 @@ Built for many users:
 - chats that blocked the bot are removed automatically;
 - the alert cooldown is per room and shared, so two open browsers don't double-alert.
 
-Automatic alerts stay off while `DummyClassifier` is selected; the test buttons
-always work. Do not commit bot secrets.
+With `DummyClassifier`, alerts can be switched on for testing but use random
+scores (set **Level must last** to 0 in Settings to trigger one quickly).
+`.streamlit/config.toml` forces the light theme so text stays readable. Do not commit bot secrets.
 
 ## Deployment
 

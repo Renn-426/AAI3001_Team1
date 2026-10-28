@@ -1,0 +1,8 @@
+# Light theme to match the app's styling. Without this, browsers in dark mode
+# get dark inputs/code boxes on top of the light custom CSS (unreadable).
+[theme]
+base = "light"
+primaryColor = "#10888e"
+backgroundColor = "#f7f9fc"
+secondaryBackgroundColor = "#edf1f6"
+textColor = "#102240"

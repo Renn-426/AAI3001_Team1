@@ -153,6 +153,18 @@ h1 { font-family: Arial, sans-serif; font-size: 32px !important; margin: 0 !impo
 .alert-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .alert-heading .panel-title { margin: 0; }
 .footer { margin-top: 0; font-size: 11px; }
+/* Keep widgets readable even if a viewer switched Streamlit to dark mode. */
+[data-testid="stCode"] pre, [data-testid="stCode"] code {
+  background: #eef3f8 !important; color: #102240 !important; }
+[data-baseweb="input"], [data-baseweb="input"] input, [data-baseweb="textarea"] textarea,
+[data-baseweb="select"] > div, [data-testid="stNumberInput"] input {
+  background: #fff !important; color: #102240 !important; }
+[data-testid="stExpander"] details, [data-testid="stExpander"] summary {
+  background: #fff !important; color: #102240 !important; }
+[data-testid="stExpander"] summary p, [data-testid="stWidgetLabel"] p,
+[data-testid="stCaptionContainer"], button[kind="secondary"] p, button[kind="tertiary"] p { color: #102240; }
+button[kind="secondary"] { background: #fff; border-color: #d5deea; }
+.st-key-preview_alert_controls { padding: 11px 15px; }
 .member-row, .room-row { display: flex; justify-content: space-between; align-items: center;
   padding: 8px 0; border-bottom: 1px solid #e4eaf1; }
 .member-row span, .room-row span { color: #64748b; font-size: 13px; }
@@ -186,9 +198,13 @@ h1 { font-family: Arial, sans-serif; font-size: 32px !important; margin: 0 !impo
 
 
 @st.cache_resource
-def load_classifier() -> tuple[BaseClassifier, bool]:
-    model = get_classifier()
-    return model, isinstance(model, DummyClassifier)
+def load_classifier() -> tuple[BaseClassifier, bool, str | None]:
+    """(classifier, is_demo, problem). A broken model file falls back to demo mode."""
+    try:
+        model = get_classifier()
+    except Exception as exc:
+        return DummyClassifier(), True, f"The model could not be loaded: {exc}"
+    return model, isinstance(model, DummyClassifier), None
 
 
 @st.cache_resource
@@ -199,7 +215,8 @@ def load_services():
     return notifier, store
 
 
-classifier, is_demo = load_classifier()
+classifier, is_demo, model_problem = load_classifier()
+spatial_connected = type(getattr(classifier, "spatial", None)).__name__ not in ("NoneType", "ObjectRiskAnalyzer")
 notifier, store = load_services()
 ss = st.session_state
 for name, default in {
@@ -349,6 +366,9 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
         panel_title("Proximity assessment", "proximity")
         if is_demo:
             state_box("Waiting for spatial analysis", compact=True)
+        elif not spatial_connected:
+            state_box("Spatial analysis not connected yet",
+                      "The danger level currently comes from the detected objects only.", compact=True)
         elif result is not None and not (error or stale or idle):
             st.write(result.reason or "No spatial explanation provided.")
             st.caption("Distance measurements are not exposed by the current classifier interface.")
@@ -434,42 +454,51 @@ with navigation:
     with st.container(key="preview_settings"):
         with st.popover("Settings", icon=":material/settings:", use_container_width=True):
             st.subheader("Monitoring settings")
-            st.caption(f"Classifier: {type(classifier).__name__}")
+            if model_problem:
+                st.error(model_problem)
+            elif is_demo:
+                st.caption("Demo model (random scores). Put the notebook's `final_best.pt` in "
+                           "`weights/` and restart to use the trained YOLOv8 detector.")
+            else:
+                st.caption(f"Model: YOLOv8 · {os.path.basename(classifier.detector.weights_path)} · "
+                           f"{len(classifier.detector.names)} classes")
+            quality = st.radio("Camera quality", ["Smooth (480p)", "Sharp (720p)"], horizontal=True,
+                               key="preview_quality",
+                               help="480p lags less: every frame is sent to the server and back. "
+                                    "Applies the next time the camera starts.")
             max_fps = st.slider("Max model runs / second", 1, 15, 5, key="preview_fps")
             show_overlay = st.checkbox("Draw detection overlay", value=True, disabled=is_demo, key="preview_overlay")
             if is_demo:
                 st.caption("Random danger banners are hidden from the demo camera.")
             st.divider()
             st.subheader("Alert settings")
-            auto_alerts = st.toggle("Enable automatic alerts", value=False, disabled=is_demo, key="preview_auto_alerts")
-            st.caption("Automatic alerts require a real classifier and subscribed Telegram recipients.")
+            st.caption("Turn alerts on and pick the room under Caregiver alerts on the Live tab.")
             min_level = DangerLevel[st.selectbox("Alert at level ≥", ["LOW", "MEDIUM", "HIGH"], index=2, key="preview_level")]
             confirm_s = st.slider("Level must last (s)", 0.0, 5.0, 1.5, 0.5, key="preview_confirm")
             cooldown = st.number_input("Cooldown between alerts (s)", 5, 3600, 60, key="preview_cooldown")
-            st.divider()
-            st.subheader("This camera")
-            room_id = st.selectbox("Room", list(rooms), format_func=rooms.get,
-                                   key="preview_room") if rooms else None
-            if not home:
-                st.caption("Set up your home and rooms in the Telegram tab.")
-            elif not rooms:
-                st.caption("Add a room in the Telegram tab.")
             if st.button("Simulate test alert", key="preview_manual_alert"):
                 record_preview_alert()
                 st.toast("Simulated event recorded. No Telegram message sent.")
     tab_live, tab_test, tab_video, tab_history, tab_telegram = st.tabs(
         ["Live Monitoring", "Test Image", "Test Video", "Alert History", "Telegram"],
-        key="main_tabs", on_change="rerun")
+        key="main_tabs", on_change="rerun")   # lets "Configure Telegram" switch tabs
 
 
 def open_telegram_tab():
     ss.main_tabs = "Telegram"
 
 
-def render_alerts(result=None, frame=None, eligible=False):
+def alert_room():
+    """This camera's room. Read from widget state so the live fragment can use it."""
+    rid = ss.get("preview_room")
+    return rid if rid in rooms else None
+
+
+def render_alerts(result=None, processor=None, eligible=False):
     with st.container(border=True, key="preview_live_alerts"):
         now = time.monotonic()
-        active = auto_alerts and not is_demo
+        room_id = alert_room()
+        active = bool(ss.get("preview_auto_alerts")) and room_id is not None
         st.html(f'<div class="alert-heading"><div class="panel-title">{svg_icon("bell")}Caregiver alerts</div><span class="pill">{"On" if active else "Off"}</span></div>')
         recipients = store.recipients(room_id) if room_id else []
         ready = bool(active and eligible and result is not None and notifier.configured and recipients)
@@ -477,40 +506,45 @@ def render_alerts(result=None, frame=None, eligible=False):
             ss.preview_danger_since = ss.preview_danger_since or now
         else:
             ss.preview_danger_since = None
-        if not active:
-            message = "Automatic alerts are disabled."
-        elif not notifier.configured:
-            message = "Telegram is not configured. See the Telegram tab."
-        elif not home:
+        if not home:
             message = "Set up your home in the Telegram tab."
         elif not room_id:
-            message = "Choose this camera's room in Settings."
+            message = "Add a room in the Telegram tab, then pick it below."
+        elif not active:
+            message = "Telegram alerts are off. Turn them on below."
+        elif not notifier.configured:
+            message = "Telegram is not configured. See the Telegram tab."
         elif not recipients:
             message = "Nobody gets alerts for this room yet. Share the invite link (Telegram tab)."
         elif not ready:
-            message = "Paused. Waiting for a fresh assessment."
+            message = "Waiting for the camera and a fresh assessment."
         elif ss.preview_danger_since is None:
-            message = "Enabled. Current result is below the alert threshold."
+            message = "On. Current result is below the alert threshold."
         elif now - ss.preview_danger_since < confirm_s:
             message = f"Confirming assessment for {confirm_s:g}s."
         elif not notifier.claim_cooldown(room_id, cooldown):     # shared by all viewers of the room
             message = f"Cooldown. Next alert possible in {notifier.cooldown_left(room_id, cooldown):.0f}s."
         else:
-            queue_alert(result, frame, room_id)
+            queue_alert(result, processor.latest_frame, room_id)
             message = "Alert queued. Check Alert History for delivery status."
         place = escape(f"{home.name} · {rooms[room_id]}" if room_id else "Not configured")
         st.html(f'<div class="alert-content"><p>{escape(message)}</p><small>Room: {place}<br>{len(recipients)} recipient(s)</small></div>')
 
 
 with tab_live:
-    camera_status = st.empty()
+    # Each live-updating part is its own fragment and only draws inside itself;
+    # writing into placeholders outside a fragment can blank the page on reruns.
+    initial_control = {"running": False, "device": ""}
+    control_state = ss.get("preview_camera_footer", {}).get("control", initial_control)
+    running = bool(control_state.get("running"))
+    st.html(f'<div class="live-heading"><h1>Live Monitoring</h1><span class="{"pill live" if running else "pill"}">'
+            f'● {"Camera on" if running else "Camera stopped"}</span></div>')
     left, right = st.columns([1.85, 1], gap="medium")
     with left:
         with st.container(border=True, key="preview_camera_card"):
-            camera_header = st.empty()
+            st.html(f'<div class="camera-card-header"><strong>Camera Feed</strong><span class="camera-view-tag">'
+                    f'{"Live camera view" if running else "Camera preview"}</span></div>')
             video_area = st.container(key="preview_video_frame")
-            initial_control = {"running": False, "device": ""}
-            control_state = ss.get("preview_camera_footer", {}).get("control", initial_control)
             controls = load_camera_controls()(
                 key="preview_camera_footer", data=control_state,
                 default={"control": initial_control}, on_control_change=lambda: None,
@@ -519,9 +553,14 @@ with tab_live:
             with video_area:
                 if not control["running"]:
                     st.html('<div class="camera-placeholder"><div class="camera-symbol"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></svg></div>'
-                                '<strong>Your camera view will appear here</strong>'
-                                '<p>Choose a video input and start monitoring.</p></div>')
-                video_constraint = {"deviceId": {"exact": control["device"]}} if control["device"] else True
+                            '<strong>Your camera view will appear here</strong>'
+                            '<p>Choose a video input and start monitoring.</p></div>')
+                # Smaller frames = less to encode/decode on both ends = less lag.
+                w, h = (640, 480) if quality.startswith("Smooth") else (1280, 720)
+                video_constraint = {"width": {"ideal": w}, "height": {"ideal": h},
+                                    "frameRate": {"ideal": 20, "max": 24}}
+                if control["device"]:
+                    video_constraint["deviceId"] = {"exact": control["device"]}
                 ctx = webrtc_streamer(
                     key="preview-camera", mode=WebRtcMode.SENDRECV,
                     rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
@@ -531,43 +570,57 @@ with tab_live:
                     async_processing=True,
                     video_html_attrs={"autoPlay": True, "controls": False, "muted": True, "style": {"width": "100%", "height": "calc(100vh - 16px)", "objectFit": "cover", "objectPosition": "center", "backgroundColor": "#e9eef4", "borderRadius": "8px"}},
                 )
-        performance = st.empty()
+
+    def live_snapshot():
+        """(processor, playing, result, error, age) from the camera thread."""
+        processor = ctx.video_processor
+        playing = bool(ctx.state.playing)
+        result, error, age = None, None, None
+        if processor is not None and playing:
+            result, error = processor.latest_result, processor.error
+            timestamp = processor.classifier.last_completed_at
+            age = time.monotonic() - timestamp if timestamp else None
+        return processor, playing, result, error, age
+
+    @st.fragment(run_every=1.0)
+    def performance():
+        processor, playing, _, _, age = live_snapshot()
+        with st.expander("Performance details"):
+            a, b, c = st.columns(3)
+            a.metric("Model FPS", f"{processor.infer_fps:.1f}" if processor and playing else "—")
+            b.metric("Latency", f"{processor.latency_ms:.0f} ms" if processor and playing else "—")
+            c.metric("Result age", f"{age:.1f} s" if age is not None else "—")
+            st.caption(f"Classifier: {type(classifier).__name__} · Inference limit: {max_fps}/s")
 
     @st.fragment(run_every=0.5)
     def live_status():
-        processor = ctx.video_processor
-        playing = bool(ctx.state.playing)
-        result, error, frame, age = None, None, None, None
-        if processor is not None:
-            processor.max_infer_fps = max_fps
-        if processor is not None and playing:
-            result, error, frame = processor.latest_result, processor.error, processor.latest_frame
-            timestamp = processor.classifier.last_completed_at
-            age = time.monotonic() - timestamp if timestamp else None
-        # Placeholders outside a fragment are replaced, so updates do not accumulate.
-        view = "Live camera view" if playing and frame is not None else "Connecting camera" if control["running"] else "Camera preview"
-        camera_header.html(f'<div class="camera-card-header"><strong>Camera Feed</strong><span class="camera-view-tag">{view}</span></div>')
-        status = "Camera streaming" if playing and frame is not None else "Camera connecting" if control["running"] else "Camera stopped"
-        status_class = "pill live" if playing and frame is not None else "pill"
-        camera_status.html(f'<div class="live-heading"><h1>Live Monitoring</h1><span class="{status_class}">● {status}</span></div>')
+        processor, playing, result, error, age = live_snapshot()
         stale = age is not None and age > 5.0
         if processor is not None:
+            processor.max_infer_fps = max_fps
             processor.draw_overlay = bool(show_overlay and not is_demo and playing and result is not None and not error and not stale)
         render_assessment(result, error=error, stale=stale, idle=not playing)
-        render_alerts(result, frame, eligible=playing and not error and not stale)
-        with performance.container():
-            with st.expander("Performance details"):
-                a, b, c = st.columns(3)
-                a.metric("Model FPS", f"{processor.infer_fps:.1f}" if processor and playing else "—")
-                b.metric("Latency", f"{processor.latency_ms:.0f} ms" if processor and playing else "—")
-                c.metric("Result age", f"{age:.1f} s" if age is not None else "—")
-                st.caption(f"Classifier: {type(classifier).__name__} · Inference limit: {max_fps}/s")
+        render_alerts(result, processor, eligible=playing and not error and not stale)
 
+    with left:
+        performance()
     with right:
         live_status()
-        # Outside the auto-refreshing fragment, so the click reruns the whole app.
-        st.button("Configure Telegram", icon=":material/send:", type="tertiary",
-                  key="preview_configure", on_click=open_telegram_tab)
+        # Controls sit outside the auto-refreshing fragment so clicks work normally.
+        with st.container(border=True, key="preview_alert_controls"):
+            if rooms:
+                st.selectbox("This camera's room", list(rooms), format_func=rooms.get, key="preview_room")
+            auto_alerts = st.toggle("Send Telegram alerts", value=False, key="preview_auto_alerts",
+                                    disabled=not rooms)
+            if not home:
+                st.caption("Create or open your home in the Telegram tab first.")
+            elif not rooms:
+                st.caption("Add a room in the Telegram tab first.")
+            elif is_demo and auto_alerts:
+                st.caption("Demo model: alerts use random scores. To see one quickly, set "
+                           "'Level must last' to 0 in Settings.")
+            st.button("Configure Telegram", icon=":material/send:", type="tertiary",
+                      key="preview_configure", on_click=open_telegram_tab)
 
 with tab_test:
     st.title("Test Image")
@@ -711,6 +764,7 @@ with tab_telegram:
             new_home = st.text_input("Home name", placeholder="Tan family", key="tg_new_home")
             if st.button("Create home", type="primary", disabled=not new_home.strip()):
                 created = store.create_home(new_home.strip())
+                store.add_room(created.id, "Living room")     # rename/remove later
                 st.query_params["home"] = created.manage_key
                 st.rerun()
         with open_col, st.container(border=True):
@@ -810,4 +864,4 @@ with tab_telegram:
                 del st.query_params["home"]
                 st.rerun()
 
-st.html(f'<div class="footer">Child Safety Monitor{" · Demo mode: assessments are simulated; automatic alerts are disabled." if is_demo else ""}</div>')
+st.html(f'<div class="footer">Child Safety Monitor{" · Demo mode: assessments are simulated." if is_demo else ""}</div>')
