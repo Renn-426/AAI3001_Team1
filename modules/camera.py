@@ -9,11 +9,14 @@ detection rate but never freezes the video.
 """
 from __future__ import annotations
 
+import io
 import threading
 import time
+from dataclasses import dataclass, field
 
 import av
 import cv2
+import numpy as np
 from streamlit_webrtc import VideoProcessorBase
 
 from modules.classifier import BaseClassifier, ClassificationResult
@@ -107,3 +110,65 @@ class CameraProcessor(VideoProcessorBase):
             wait = start + 1.0 / max(self.max_infer_fps, 0.1) - now
             if wait > 0:
                 time.sleep(wait)
+
+
+# ---------------- uploaded video: same classifier, offline ----------------
+@dataclass
+class VideoReport:
+    timeline: list[tuple[float, ClassificationResult]] = field(default_factory=list)
+    worst_t: float = 0.0                        # seconds into the video
+    worst_result: ClassificationResult | None = None
+    worst_frame: np.ndarray | None = None
+    annotated_mp4: bytes | None = None          # H.264, plays in the browser
+    seconds: float = 0.0
+    truncated: bool = False                     # stopped at max_seconds
+
+
+def analyse_video(path: str, classifier: BaseClassifier, every_n: int = 5,
+                  overlay: bool = True, max_seconds: float = 120, width: int = 640,
+                  on_progress=None) -> VideoReport:
+    """Run the classifier on every Nth frame and write an annotated copy.
+
+    Frames are resized to `width` first (the model and the boxes then use the
+    same coordinates). Frames between two model runs reuse the last result.
+    """
+    rep = VideoReport()
+    src = av.open(path)
+    stream = src.streams.video[0]
+    fps = float(stream.average_rate or 25)
+    duration = float(stream.duration * stream.time_base) if stream.duration else 0.0
+    buf = io.BytesIO()
+    out = av.open(buf, "w", format="mp4")
+    enc = None
+    last = None
+    try:
+        for i, frame in enumerate(src.decode(stream)):
+            t = float(frame.time) if frame.time is not None else i / fps
+            if t > max_seconds:
+                rep.truncated = True
+                break
+            img = frame.to_ndarray(format="bgr24")
+            h = int(img.shape[0] * width / img.shape[1]) // 2 * 2    # H.264 needs even sizes
+            img = cv2.resize(img, (width, h))
+            if enc is None:
+                enc = out.add_stream("libx264", rate=round(fps))
+                enc.width, enc.height, enc.pix_fmt = width, h, "yuv420p"
+            if i % every_n == 0:
+                last = classifier.predict(img)
+                rep.timeline.append((t, last))
+                if rep.worst_result is None or last.score > rep.worst_result.score:
+                    rep.worst_t, rep.worst_result, rep.worst_frame = t, last, img
+                if on_progress:
+                    on_progress(min(t / min(duration or max_seconds, max_seconds), 1.0))
+            shown = draw_result(img, last) if overlay and last else img
+            for packet in enc.encode(av.VideoFrame.from_ndarray(shown, format="bgr24")):
+                out.mux(packet)
+            rep.seconds = t
+        if enc is not None:
+            for packet in enc.encode():
+                out.mux(packet)
+    finally:
+        out.close()
+        src.close()
+    rep.annotated_mp4 = buf.getvalue() if enc is not None else None
+    return rep

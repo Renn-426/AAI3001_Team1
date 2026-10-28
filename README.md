@@ -12,7 +12,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-The improved UI is in `app.py`: live camera controls, image testing, and four
+The improved UI is in `app.py`: live camera controls, image and video testing, and four
 separate status cards for Assessment, Detected objects, Proximity assessment,
 and Caregiver alerts. Simulated results are shown directly with severity colours.
 The Settings button is on the navigation row. Automatic Telegram alerts are
@@ -26,10 +26,10 @@ The single `requirements.txt` includes both UI and training dependencies.
 
 | File | Purpose | Owners |
 |---|---|---|
-| `app.py` | Improved UI, camera controls, four status cards, image tester, Settings, and alert history | Liv & Ren |
-| `modules/camera.py` | Browser camera frames, background inference, and overlays | Liv & Ren |
-| `modules/notifier.py` | Telegram text/photo alerts and cooldown | Liv & Ren |
-| `modules/subscriptions.py` | Camera invite codes, subscribers, and bot commands | Liv & Ren |
+| `app.py` | Improved UI, camera controls, four status cards, image & video tester, Telegram setup, Settings, and alert history | Liv & Ren |
+| `modules/camera.py` | Browser camera frames, background inference, overlays, and video analysis | Liv & Ren |
+| `modules/notifier.py` | Telegram send queue (rate limits, photo reuse) and per-room cooldown | Liv & Ren |
+| `modules/subscriptions.py` | Homes, rooms, members (SQLite) and bot commands | Liv & Ren |
 | `modules/detector.py` | Detection interface and unfinished YOLO model skeleton | Tze |
 | `modules/spatial.py` | Spatial interface and unfinished proximity/risk skeleton | Ayumi & Nic |
 | `modules/classifier.py` | Shared result types and pipeline integration | Shared |
@@ -86,13 +86,36 @@ Create `.streamlit/secrets.toml` (already ignored by Git):
 TELEGRAM_BOT_TOKEN = "your-bot-token"
 ```
 
-In **Settings**, create a camera and generate its invite link. Open the link in
-Telegram and press Start to subscribe, then use **Test message** to verify it.
+How recipients are organised:
 
-Alert sending is wired into the app. Once a real classifier is connected, enable
-**Enable automatic alerts** in **Settings**; it is off by default. Settings also
-controls the alert level, confirmation duration, and cooldown. Simulated tests
-are labelled in history and do not send Telegram messages. Do not commit bot secrets.
+```text
+Home (one household, private home key)
+ ├─ Rooms:   Living room, Bedroom, ...   <- each camera picks its room in Settings
+ └─ Members: Telegram chats that joined with the home's invite link
+             (a parent, or a family group chat)
+```
+
+1. Open the **Telegram** tab and create a home. Its private key is put in the
+   page URL, so bookmark the page (or keep the key) to reopen it.
+2. Add one room per camera location.
+3. Send the invite link to caregivers. One tap joins **all** rooms of the home.
+4. In **Settings → This camera**, choose which room this camera is in.
+5. Use **Send test message** / **Send test alert** in the Telegram tab to check delivery.
+
+In Telegram, members can use `/rooms` to mute or unmute single rooms, or leave a
+home, and `/stop` to leave everything. One person can join several homes
+(e.g. their own and a grandparent's) and gets alerts labelled `Home · Room`.
+
+Built for many users:
+- every browser only sees its own home; nobody can see or delete other homes;
+- subscriptions are in SQLite (`subscribers.db`), safe with many users and threads;
+- alerts go through one queue that stays under Telegram's rate limit and retries
+  when Telegram asks to slow down; a photo is uploaded once and re-used for all members;
+- chats that blocked the bot are removed automatically;
+- the alert cooldown is per room and shared, so two open browsers don't double-alert.
+
+Automatic alerts stay off while `DummyClassifier` is selected; the test buttons
+always work. Do not commit bot secrets.
 
 ## Deployment
 
@@ -101,5 +124,7 @@ the deployment to `app.py` and enter the bot token in App settings -> Secrets.
 Model hosting requirements depend on the selected model. Restrictive networks
 may require a TURN server in `RTC_CONFIG` in `app.py`.
 
-Subscriptions are stored in local `subscribers.json`; persistent hosting storage
-is needed if they must survive redeployments or ephemeral disk resets.
+Subscriptions are stored in local `subscribers.db` (SQLite). Hosts that wipe the disk
+on restart (e.g. Streamlit Community Cloud) need persistent storage or a hosted
+database (Postgres/Supabase) behind the same `SubscriptionStore` methods. Only one
+running server may poll the bot; with several servers, switch the bot to a webhook.

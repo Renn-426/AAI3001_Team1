@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from base64 import b64encode
 from html import escape
-import threading
+import os
+import tempfile
 import time
 
 import cv2
@@ -15,7 +16,7 @@ import numpy as np
 import streamlit as st
 from streamlit_webrtc import RTCConfiguration, WebRtcMode, webrtc_streamer
 
-from modules.camera import CameraProcessor, draw_result
+from modules.camera import CameraProcessor, analyse_video, draw_result
 from modules.classifier import (
     BaseClassifier, ClassificationResult, DangerLevel, DummyClassifier, get_classifier,
 )
@@ -69,7 +70,13 @@ h3 { font-size: 1.1rem !important; }
   --nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='m21 15-5-5L5 21'/%3E%3C/svg%3E");
 }
 [data-testid="stTabs"] [data-testid="stTab"][data-key="2"] {
+  --nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='2'/%3E%3Cpath d='M3 8h18M3 16h18M7 4v4M12 4v4M17 4v4M7 16v4M12 16v4M17 16v4'/%3E%3C/svg%3E");
+}
+[data-testid="stTabs"] [data-testid="stTab"][data-key="3"] {
   --nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M9 7h6M9 11h6M9 15h4'/%3E%3C/svg%3E");
+}
+[data-testid="stTabs"] [data-testid="stTab"][data-key="4"] {
+  --nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13'/%3E%3C/svg%3E");
 }
 [data-testid="stTabs"] .react-aria-SelectionIndicator,
 [data-testid="stTabs"] [data-baseweb="tab-border"] { display: none; }
@@ -146,6 +153,9 @@ h1 { font-family: Arial, sans-serif; font-size: 32px !important; margin: 0 !impo
 .alert-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .alert-heading .panel-title { margin: 0; }
 .footer { margin-top: 0; font-size: 11px; }
+.member-row, .room-row { display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid #e4eaf1; }
+.member-row span, .room-row span { color: #64748b; font-size: 13px; }
 [data-testid="stExpander"] summary { min-height: 38px; }
 @media (min-width: 900px) and (max-height: 900px) {
   [data-testid="stVerticalBlock"] { gap: 7px; }
@@ -185,7 +195,7 @@ def load_classifier() -> tuple[BaseClassifier, bool]:
 def load_services():
     notifier, store = TelegramNotifier(), SubscriptionStore()
     if notifier.token:
-        start_poller(notifier.token, store)
+        start_poller(notifier.token, store, notifier.api_base)   # bot: /start, /rooms, /stop
     return notifier, store
 
 
@@ -197,8 +207,15 @@ for name, default in {
     "preview_last_alert": 0.0, "preview_image_result": None,
     "preview_image_frame": None, "preview_image_ms": None,
     "preview_image_key": None, "preview_image_error": None,
+    "preview_video_report": None, "preview_video_key": None,
 }.items():
     ss.setdefault(name, default)
+
+# Each browser only sees ITS home. The private home key lives in the URL
+# (?home=...), so a bookmark reopens it and other visitors can't see it.
+home_key = st.query_params.get("home")
+home = store.home_by_key(home_key) if home_key else None
+rooms = store.rooms(home.id) if home else {}
 
 
 class TimedClassifier(BaseClassifier):
@@ -273,18 +290,19 @@ def record_preview_alert(result=None, frame=None, simulated=True):
     return event
 
 
-def queue_alert(result, frame, camera_code):
+def queue_alert(result, frame, room_id):
     """Send a real alert in the background and retain its delivery status."""
     event = record_preview_alert(result, frame, simulated=False)
+    event["room"] = rooms.get(room_id, "")
 
-    def send():
+    def done(future):
         try:
-            sent = notifier.send_alert(result, frame, camera_code, store, force=True)
-            event["status"] = "Sent to Telegram" if sent else "Telegram delivery failed"
+            n = future.result()
+            event["status"] = f"Sent to {n} Telegram chat(s)" if n else "Telegram delivery failed"
         except Exception:
             event["status"] = "Telegram delivery failed"
 
-    threading.Thread(target=send, daemon=True).start()
+    notifier.send_alert(result, frame, room_id, store).add_done_callback(done)
 
 
 def render_assessment(result=None, error=None, stale=False, idle=False, prefix="live"):
@@ -408,23 +426,6 @@ def load_camera_controls():
     )
 
 
-@st.cache_resource
-def load_settings_opener():
-    return st.components.v2.component(
-        "preview_telegram_link",
-        html='<button type="button"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/></svg><span>Configure Telegram</span></button>',
-        css='button { display:flex; align-items:center; gap:10px; border:0; background:transparent; color:#10888e; font:14px Arial,sans-serif; padding:2px 0; cursor:pointer; } span { text-decoration:underline; text-underline-offset:3px; } button:focus-visible { outline:2px solid #10888e; outline-offset:3px; }',
-        js="""
-        export default function({ parentElement }) {
-          parentElement.querySelector('button').onclick = () => {
-            const button = document.querySelector('.st-key-preview_settings [data-testid="stPopoverButton"]');
-            if (button && button.getAttribute('aria-expanded') === 'false') button.click();
-          };
-        }
-        """,
-    )
-
-
 # Keep Settings aligned to the native tab row, with page content at full width.
 shield_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 38"><path fill="#10888e" d="M16 0 30 6l-2 17-12 15L4 23 2 6z"/><circle fill="white" cx="11" cy="11" r="2"/><path fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="m9 22 5 5 10-13"/></svg>'
 st.html(f'<div class="brand"><span class="brand-shield"><img src="{svg_data_uri(shield_svg)}" width="23" height="27" alt="Shield logo"></span>Child Safety Monitor</div>')
@@ -446,37 +447,23 @@ with navigation:
             confirm_s = st.slider("Level must last (s)", 0.0, 5.0, 1.5, 0.5, key="preview_confirm")
             cooldown = st.number_input("Cooldown between alerts (s)", 5, 3600, 60, key="preview_cooldown")
             st.divider()
-            st.subheader("Telegram configuration")
-            st.caption("Bot token found" if notifier.configured else "Bot token not configured")
-            cameras = store.cameras()
-            camera_code = st.selectbox("Recipient group", list(cameras), format_func=lambda code: cameras[code], key="preview_camera") if cameras else None
-            if not cameras:
-                st.caption("No recipient groups configured in the existing app.")
-            with st.expander("New camera / invite link"):
-                new_name = st.text_input("Camera name", key="camera_name", placeholder="Living room")
-                if st.button("Generate link", disabled=not (notifier.configured and new_name.strip())):
-                    code = store.create_camera(new_name.strip())
-                    ss["camera_invite_link"] = notifier.deep_link(code)
-                    st.rerun()
-                if ss.get("camera_invite_link"):
-                    st.caption("Open this link in Telegram and press Start to subscribe.")
-                    st.code(ss.camera_invite_link)
-            if st.button("Test message", disabled=not (notifier.configured and camera_code)):
-                try:
-                    sent = notifier.broadcast_text(store, camera_code, "Test message from Child Safety Monitor")
-                    st.toast(f"Sent to {sent} subscriber(s)" if sent else "No subscribers, or sending failed")
-                except Exception:
-                    st.error("Could not send the test message. Check the Telegram configuration.")
-            if camera_code and st.button("Revoke camera"):
-                store.delete_camera(camera_code)
-                ss.pop("camera_invite_link", None)
-                st.rerun()
-            st.code('TELEGRAM_BOT_TOKEN = "your-bot-token"', language="toml")
-            st.caption("Token location: .streamlit/secrets.toml. Never commit this file.")
+            st.subheader("This camera")
+            room_id = st.selectbox("Room", list(rooms), format_func=rooms.get,
+                                   key="preview_room") if rooms else None
+            if not home:
+                st.caption("Set up your home and rooms in the Telegram tab.")
+            elif not rooms:
+                st.caption("Add a room in the Telegram tab.")
             if st.button("Simulate test alert", key="preview_manual_alert"):
                 record_preview_alert()
                 st.toast("Simulated event recorded. No Telegram message sent.")
-    tab_live, tab_test, tab_history = st.tabs(["Live Monitoring", "Test Image", "Alert History"])
+    tab_live, tab_test, tab_video, tab_history, tab_telegram = st.tabs(
+        ["Live Monitoring", "Test Image", "Test Video", "Alert History", "Telegram"],
+        key="main_tabs", on_change="rerun")
+
+
+def open_telegram_tab():
+    ss.main_tabs = "Telegram"
 
 
 def render_alerts(result=None, frame=None, eligible=False):
@@ -484,36 +471,35 @@ def render_alerts(result=None, frame=None, eligible=False):
         now = time.monotonic()
         active = auto_alerts and not is_demo
         st.html(f'<div class="alert-heading"><div class="panel-title">{svg_icon("bell")}Caregiver alerts</div><span class="pill">{"On" if active else "Off"}</span></div>')
-        ready = bool(active and eligible and result is not None and notifier.configured and camera_code and store.chats_for(camera_code))
+        recipients = store.recipients(room_id) if room_id else []
+        ready = bool(active and eligible and result is not None and notifier.configured and recipients)
         if ready and result.level >= min_level:
             ss.preview_danger_since = ss.preview_danger_since or now
         else:
             ss.preview_danger_since = None
-        if is_demo:
-            message = "Automatic alerts are disabled."
-        elif not active:
+        if not active:
             message = "Automatic alerts are disabled."
         elif not notifier.configured:
-            message = "Telegram is not configured. Open Settings to add the bot token."
-        elif not camera_code:
-            message = "Select a recipient group in Settings."
-        elif not store.chats_for(camera_code):
-            message = "No subscribers yet. Open the camera invite link in Telegram."
+            message = "Telegram is not configured. See the Telegram tab."
+        elif not home:
+            message = "Set up your home in the Telegram tab."
+        elif not room_id:
+            message = "Choose this camera's room in Settings."
+        elif not recipients:
+            message = "Nobody gets alerts for this room yet. Share the invite link (Telegram tab)."
         elif not ready:
             message = "Paused. Waiting for a fresh assessment."
         elif ss.preview_danger_since is None:
             message = "Enabled. Current result is below the alert threshold."
         elif now - ss.preview_danger_since < confirm_s:
             message = f"Confirming assessment for {confirm_s:g}s."
-        elif now - ss.preview_last_alert < cooldown:
-            message = "Cooldown. An alert was recently recorded."
+        elif not notifier.claim_cooldown(room_id, cooldown):     # shared by all viewers of the room
+            message = f"Cooldown. Next alert possible in {notifier.cooldown_left(room_id, cooldown):.0f}s."
         else:
-            queue_alert(result, frame, camera_code)
+            queue_alert(result, frame, room_id)
             message = "Alert queued. Check Alert History for delivery status."
-        group = escape(cameras.get(camera_code, "Not configured"))
-        count = len(store.chats_for(camera_code)) if camera_code else 0
-        st.html(f'<div class="alert-content"><p>{escape(message)}</p><small>Recipient group: {group}<br>{count} subscriber(s)</small></div>')
-        load_settings_opener()(key="preview_configure", height=28)
+        place = escape(f"{home.name} · {rooms[room_id]}" if room_id else "Not configured")
+        st.html(f'<div class="alert-content"><p>{escape(message)}</p><small>Room: {place}<br>{len(recipients)} recipient(s)</small></div>')
 
 
 with tab_live:
@@ -579,6 +565,9 @@ with tab_live:
 
     with right:
         live_status()
+        # Outside the auto-refreshing fragment, so the click reruns the whole app.
+        st.button("Configure Telegram", icon=":material/send:", type="tertiary",
+                  key="preview_configure", on_click=open_telegram_tab)
 
 with tab_test:
     st.title("Test Image")
@@ -640,10 +629,185 @@ with tab_history:
                     else:
                         details = st.container()
                     with details:
-                        st.markdown(f"**{event['level']} · {event['time']}**")
+                        room = f" · {event['room']}" if event.get("room") else ""
+                        st.markdown(f"**{event['level']}{room} · {event['time']}**")
                         st.write(event["reason"])
                         st.caption(event["status"])
 
     render_history()
+
+with tab_video:
+    st.title("Test Video")
+    st.caption("Run the same classifier over a recorded video. Video tests do not send alerts.")
+    video_col, summary_col = st.columns([1.85, 1], gap="medium")
+    with video_col:
+        with st.container(border=True):
+            panel_title("Video input")
+            uploaded_video = st.file_uploader("Choose a video", type=["mp4", "mov", "avi", "mkv", "webm"],
+                                              key="preview_video_upload")
+            video_key = uploaded_video.file_id if uploaded_video is not None else None
+            if ss.preview_video_key != video_key:
+                ss.preview_video_key, ss.preview_video_report = video_key, None
+            if uploaded_video is None:
+                state_box("No video selected", "Upload a short clip (up to 2 minutes are analysed).")
+            else:
+                every_n = st.slider("Analyse every Nth frame", 1, 30, 5, key="preview_video_step",
+                                    help="Higher is faster; frames in between reuse the last result.")
+                if st.button("Analyse video", type="primary", key="preview_video_analyse"):
+                    # delete=False: Windows cannot reopen a file that is still open
+                    with tempfile.NamedTemporaryFile(suffix=os.path.splitext(uploaded_video.name)[1],
+                                                     delete=False) as tmp:
+                        tmp.write(uploaded_video.getvalue())
+                    bar = st.progress(0.0, text="Analysing video...")
+                    try:
+                        ss.preview_video_report = analyse_video(
+                            tmp.name, classifier, every_n=every_n,
+                            overlay=bool(show_overlay and not is_demo),
+                            on_progress=lambda f: bar.progress(f, text="Analysing video..."))
+                    except Exception as exc:
+                        ss.preview_video_report = None
+                        st.error(f"Could not analyse this video: {exc}")
+                    finally:
+                        os.unlink(tmp.name)
+                        bar.empty()
+                report = ss.preview_video_report
+                if report and report.annotated_mp4:
+                    st.video(report.annotated_mp4)
+                    st.download_button("Download annotated video", report.annotated_mp4,
+                                       file_name="annotated.mp4", mime="video/mp4")
+                elif report is None:
+                    st.video(uploaded_video)
+    with summary_col:
+        report = ss.preview_video_report
+        if report and report.timeline:
+            with st.container(border=True):
+                panel_title("Danger over time", "assessment")
+                st.line_chart({"Danger score": {round(t, 1): r.score for t, r in report.timeline}},
+                              x_label="Seconds", height=180)
+                high = [t for t, r in report.timeline if r.level >= min_level]
+                st.caption(f"{len(high)} of {len(report.timeline)} analysed frames at "
+                           f"{min_level.name} or above · {report.seconds:.0f}s analysed"
+                           + (" (video cut at 2 min)" if report.truncated else ""))
+            st.caption(f"Most dangerous moment: {report.worst_t:.1f}s")
+            if report.worst_frame is not None:
+                st.image(draw_result(report.worst_frame, report.worst_result)
+                         if show_overlay and not is_demo else report.worst_frame, channels="BGR")
+            render_assessment(report.worst_result, prefix="video")
+        else:
+            render_assessment(None, prefix="video")
+
+with tab_telegram:
+    st.title("Telegram")
+    st.caption("One home holds all your rooms. Family members join the home once with "
+               "one link, then pick which rooms alert them from inside Telegram (/rooms).")
+    if not notifier.configured:
+        st.warning("No bot token found. Add it to `.streamlit/secrets.toml`, then restart the app.")
+        st.code('TELEGRAM_BOT_TOKEN = "your-bot-token"', language="toml")
+
+    if not home:
+        create_col, open_col = st.columns(2, gap="medium")
+        with create_col, st.container(border=True):
+            panel_title("Create a home")
+            new_home = st.text_input("Home name", placeholder="Tan family", key="tg_new_home")
+            if st.button("Create home", type="primary", disabled=not new_home.strip()):
+                created = store.create_home(new_home.strip())
+                st.query_params["home"] = created.manage_key
+                st.rerun()
+        with open_col, st.container(border=True):
+            panel_title("Open my home")
+            typed_key = st.text_input("Home key", type="password", key="tg_home_key",
+                                      help="Shown on the home page after you create it.")
+            if st.button("Open home", disabled=not typed_key.strip()):
+                if store.home_by_key(typed_key.strip()):
+                    st.query_params["home"] = typed_key.strip()
+                    st.rerun()
+                else:
+                    st.error("No home with this key.")
+    else:
+        head, close = st.columns([4, 1])
+        head.subheader(f"🏠 {home.name}")
+        if close.button("Close home", use_container_width=True):
+            del st.query_params["home"]
+            st.rerun()
+        with st.expander("Home key (keep private)"):
+            st.code(home.manage_key)
+            st.caption("This key opens the home on any device. It is also in this page's URL, "
+                       "so bookmarking the page works too.")
+
+        rooms_col, people_col = st.columns(2, gap="medium")
+        with rooms_col, st.container(border=True):
+            panel_title("Rooms")
+            if not rooms:
+                state_box("No rooms yet", "Add one for each camera location.", compact=True)
+            for rid, name in rooms.items():
+                c1, c2 = st.columns([4, 1])
+                c1.html(f'<div class="room-row"><b>{escape(name)}</b>'
+                        f'<span>{len(store.recipients(rid))} recipient(s)</span></div>')
+                if c2.button("Remove", key=f"tg_del_room_{rid}", type="tertiary"):
+                    store.delete_room(rid)
+                    st.rerun()
+            with st.form("tg_add_room", clear_on_submit=True, border=False):
+                room_name = st.text_input("New room", placeholder="Bedroom")
+                if st.form_submit_button("Add room") and room_name.strip():
+                    if store.add_room(home.id, room_name.strip()) is None:
+                        st.error("This home already has a room with that name.")
+                    else:
+                        st.rerun()
+
+        with people_col, st.container(border=True):
+            panel_title("Invite & members")
+            link = notifier.deep_link(home.invite_code) if notifier.configured else None
+            if link:
+                st.caption("Send this link to caregivers. They open it and press Start. "
+                           "It also works in a family group chat.")
+                st.code(link, language=None)
+            else:
+                st.caption("The invite link appears once the bot token is configured.")
+            if st.button("Replace link", help="The old link stops working. Current members stay."):
+                store.new_invite(home.id)
+                st.rerun()
+            members = store.members(home.id)
+            st.markdown(f"**{len(members)} member(s)**")
+            for chat_id, display in members:
+                c1, c2 = st.columns([4, 1])
+                c1.html(f'<div class="member-row"><b>{escape(display or str(chat_id))}</b></div>')
+                if c2.button("Remove", key=f"tg_del_member_{chat_id}", type="tertiary"):
+                    store.leave(home.id, chat_id)
+                    st.rerun()
+
+        with st.container(border=True):
+            panel_title("Check delivery", "bell")
+            test_room = st.selectbox("Room", list(rooms), format_func=rooms.get,
+                                     key="tg_test_room") if rooms else None
+            t1, t2 = st.columns(2)
+            if t1.button("Send test message", disabled=not (notifier.configured and members),
+                         use_container_width=True):
+                with st.spinner("Sending..."):
+                    n = notifier.send_text([c for c, _ in members],
+                                           f"✅ Test message from Child Safety Monitor ({home.name})").result()
+                (st.success if n else st.error)(f"Delivered to {n} of {len(members)} member(s).")
+            if t2.button("Send test alert (photo)", use_container_width=True,
+                         disabled=not (notifier.configured and test_room and store.recipients(test_room))):
+                processor = ctx.video_processor
+                frame = processor.latest_frame if processor is not None else None
+                if frame is None:                     # no live camera: send a placeholder card
+                    frame = np.full((360, 640, 3), (238, 241, 246), np.uint8)
+                    cv2.putText(frame, "Test alert", (210, 190), cv2.FONT_HERSHEY_SIMPLEX,
+                                1.4, (64, 34, 16), 3, cv2.LINE_AA)
+                fake = ClassificationResult(DangerLevel.HIGH, 1.0, [], "Manual test alert")
+                event = record_preview_alert(fake, frame, simulated=False)
+                event["room"] = rooms[test_room]
+                with st.spinner("Sending..."):
+                    n = notifier.send_alert(fake, frame, test_room, store).result()
+                event["status"] = f"Sent to {n} Telegram chat(s)" if n else "Telegram delivery failed"
+                (st.success if n else st.error)(f"Test alert delivered to {n} chat(s).")
+            st.caption("Members who muted a room in Telegram don't receive its alerts.")
+
+        with st.expander("Delete home"):
+            st.caption("Removes all rooms and members. Invite links stop working.")
+            if st.button("Delete this home", type="primary"):
+                store.delete_home(home.id)
+                del st.query_params["home"]
+                st.rerun()
 
 st.html(f'<div class="footer">Child Safety Monitor{" · Demo mode: assessments are simulated; automatic alerts are disabled." if is_demo else ""}</div>')
