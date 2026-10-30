@@ -35,6 +35,7 @@ class Detection:
     label: str
     confidence: float
     bbox: tuple[int, int, int, int] | None = None
+    depth: float | None = None        # optional 0-1 relative depth (1 = closest)
 
 
 @dataclass

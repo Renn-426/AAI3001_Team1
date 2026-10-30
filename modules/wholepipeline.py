@@ -31,14 +31,14 @@ try:
     from modules.classifier import Detection  # type: ignore
 except ImportError:
     # Fallback stub with the same shape assumed in spatial_analyzer.py
-    # (.label: str, .confidence: float, .box: (x1, y1, x2, y2) pixels).
+    # (.label: str, .confidence: float, .bbox: (x1, y1, x2, y2) pixels).
     # Safe to use standalone; swap to the real import once this runs
     # inside your team's repo.
     @dataclass
     class Detection:  # type: ignore
         label: str
         confidence: float
-        box: tuple[float, float, float, float]
+        bbox: tuple[float, float, float, float]
 
 from spatial import SpatialAnalyzer, CHILD_LABELS, DANGER_WEIGHTS
 
@@ -61,7 +61,7 @@ def yolo_results_to_detections(results, conf_thres: float) -> list[Detection]:
         cls_id = int(b.cls[0])
         label = names[cls_id]
         box = tuple(b.xyxy[0].tolist())  # (x1, y1, x2, y2)
-        out.append(Detection(label=label, confidence=conf, box=box))
+        out.append(Detection(label=label, confidence=conf, bbox=box))
     return out
 
 
@@ -132,9 +132,9 @@ def process_video(video_path, out_path, baby_model_path, hazard_model_path,
 
         # --- draw boxes ---
         for d in baby_dets:
-            draw_box(frame, d.box, (255, 255, 255), "baby/person")
+            draw_box(frame, d.bbox, (255, 255, 255), "baby/person")
         for d in hazard_dets:
-            draw_box(frame, d.box, ZONE_COLORS[zone], d.label)
+            draw_box(frame, d.bbox, ZONE_COLORS[zone], d.label)
 
         # --- banner ---
         cv2.rectangle(frame, (0, 0), (width, 40), (30, 30, 30), -1)

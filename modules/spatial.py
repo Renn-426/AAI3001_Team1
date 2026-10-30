@@ -8,14 +8,14 @@ try:
     from modules.classifier import Detection  # real class, used inside your repo
 except ImportError:
     # Fallback for standalone testing/demo outside the full repo.
-    # Same shape as assumed below: .label, .confidence, .box
+    # Same shape as the real class: .label, .confidence, .bbox, .depth
     from dataclasses import dataclass
 
     @dataclass
     class Detection:  # type: ignore
         label: str
         confidence: float
-        box: tuple[float, float, float, float]
+        bbox: tuple[float, float, float, float] | None = None
         depth: float | None = None  # optional: 0-1 normalized relative depth
         # (1 = closest to camera, 0 = farthest). Leave as None if you're
         # not using depth estimation - everything still works, just
@@ -26,9 +26,11 @@ except ImportError:
 # This code assumes `Detection` has:
 #   .label       -> str, class name (e.g. "baby", "battery", "coin", ...)
 #   .confidence  -> float
-#   .box         -> tuple/list (x1, y1, x2, y2) in pixel coords, absolute
+#   .bbox        -> tuple/list (x1, y1, x2, y2) in pixel coords, absolute
+#                   (detections with bbox=None are ignored)
+#   .depth       -> optional float, 0-1 relative depth (1 = closest)
 #
-# If your Detection uses different attribute names (e.g. .bbox, .xywh,
+# If your Detection uses different attribute names (e.g. .xywh,
 # .cls_name) or a normalized box, change the `_box_xyxy` and `_label`
 # helper functions below — nothing else needs to change.
 # ---------------------------------------------------------------------------
@@ -92,7 +94,7 @@ def _label(det: Detection) -> str:
 
 
 def _box_xyxy(det: Detection) -> tuple[float, float, float, float]:
-    x1, y1, x2, y2 = det.box
+    x1, y1, x2, y2 = det.bbox
     return float(x1), float(y1), float(x2), float(y2)
 
 
@@ -138,6 +140,7 @@ class SpatialAnalyzer(BaseSpatialAnalyzer):
     def assess(
         self, detections: list[Detection], frame_shape: tuple[int, int]
     ) -> tuple[float, str]:
+        detections = [d for d in detections if d.bbox is not None]
         children = [d for d in detections if _label(d) in CHILD_LABELS]
         hazards = [d for d in detections if _label(d) not in CHILD_LABELS
                    and _label(d) in DANGER_WEIGHTS]

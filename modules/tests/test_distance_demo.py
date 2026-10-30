@@ -57,8 +57,8 @@ if __name__ == "__main__":
     analyzer = SpatialAnalyzer()
 
     detections = [
-        Detection(label="person", confidence=0.91, box=baby1_box),
-        Detection(label="coin_battery", confidence=0.87, box=(230, 380, 260, 410)),
+        Detection(label="person", confidence=0.91, bbox=baby1_box),
+        Detection(label="coin_battery", confidence=0.87, bbox=(230, 380, 260, 410)),
     ]
     frame_shape = (480, 640)  # (height, width)
 
