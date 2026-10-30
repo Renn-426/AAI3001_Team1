@@ -13,6 +13,7 @@ Run from the repo root:
     python modules/tests/live_spatial_test.py
     python modules/tests/live_spatial_test.py --no-depth
     python modules/tests/live_spatial_test.py --extra-hazards "cell phone,cup"
+    python modules/tests/live_spatial_test.py --show-all --conf 0.15 --model yolov8s.pt
 
 Keys: q = quit, d = toggle depth view, s = save screenshot
 """
@@ -35,6 +36,7 @@ from modules.spatial import (
 )
 
 WHITE = (255, 255, 255)
+GREY = (160, 160, 160)
 
 
 def level_bgr(level: DangerLevel) -> tuple[int, int, int]:
@@ -149,6 +151,10 @@ def main():
     parser.add_argument("--camera", type=int, default=0, help="webcam index")
     parser.add_argument("--model", default="yolov8n.pt", help="COCO YOLOv8 weights")
     parser.add_argument("--conf", type=float, default=0.35)
+    parser.add_argument("--imgsz", type=int, default=640,
+                        help="YOLO input size; larger (e.g. 960) helps small objects")
+    parser.add_argument("--show-all", action="store_true",
+                        help="also draw every other COCO detection in grey (not scored)")
     parser.add_argument("--no-depth", action="store_true", help="planar distance only")
     parser.add_argument("--extra-hazards", default="",
                         help='comma-separated COCO names to treat as hazards, '
@@ -161,7 +167,8 @@ def main():
     model = YOLO(args.model)
     wanted = [i for i, n in model.names.items()
               if n in CHILD_LABELS or n.lower().replace(" ", "_") in DANGER_WEIGHTS]
-    print("Detecting:", ", ".join(model.names[i] for i in wanted))
+    wanted_names = {model.names[i] for i in wanted}
+    print("Detecting:", ", ".join(sorted(wanted_names)))
 
     analyzer = SpatialAnalyzer()
     worker = None
@@ -185,8 +192,11 @@ def main():
             worker.submit(frame.copy())
 
         depth_map = worker.depth_map if worker else None
-        result = model.predict(frame, conf=args.conf, classes=wanted, verbose=False)[0]
+        result = model.predict(frame, conf=args.conf, imgsz=args.imgsz,
+                               classes=None if args.show_all else wanted, verbose=False)[0]
         dets = yolo_to_detections(result, depth_map)
+        others = [d for d in dets if d.label not in wanted_names]
+        dets = [d for d in dets if d.label in wanted_names]
         score, reason = analyzer.assess(dets, frame.shape[:2])
         level = score_to_level(score)
 
@@ -198,6 +208,11 @@ def main():
         fps = 1.0 / max(t_now - t_prev, 1e-6)
         t_prev = t_now
         status = f"{fps:.0f} fps | " + (worker.status() if worker else "depth: off")
+        for d in others:  # --show-all: what YOLO sees outside our classes
+            x1, y1, x2, y2 = d.bbox
+            cv2.rectangle(frame, (x1, y1), (x2, y2), GREY, 1)
+            cv2.putText(frame, f"{d.label} {d.confidence:.2f}", (x1, max(12, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, GREY, 1)
         draw(frame, dets, level, score, reason, status)
 
         view = frame
