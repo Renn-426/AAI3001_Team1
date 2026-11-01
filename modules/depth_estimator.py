@@ -17,6 +17,10 @@ from transformers import pipeline
 
 _depth_pipe = None
 
+# Share of each box's width/height used for depth, kept around its centre.
+# Box corners are usually background, which skews the median.
+DEPTH_SAMPLE_FRACTION = 0.5
+
 
 def get_depth_pipeline(device=None):
     """Lazily load the model once and reuse it across frames (loading
@@ -49,19 +53,30 @@ def compute_depth_map(frame_bgr: np.ndarray) -> np.ndarray:
     return depth_map
 
 
+def depth_sample_box(box, fraction=DEPTH_SAMPLE_FRACTION) -> tuple[int, int, int, int]:
+    """The central part of a box that depth is actually read from
+    (x1, y1, x2, y2). Always at least 1 pixel wide and tall."""
+    x1, y1, x2, y2 = [float(v) for v in box]
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    half_w = max((x2 - x1) * fraction / 2, 1.0)
+    half_h = max((y2 - y1) * fraction / 2, 1.0)
+    return (int(cx - half_w), int(cy - half_h), int(cx + half_w), int(cy + half_h))
+
+
 def sample_box_depth(depth_map: np.ndarray, box, method="median") -> float:
     """
     Get a single representative depth value for a bounding box.
 
-    Using the median over the whole box (not just the center point) is
-    more robust - the center pixel might land on a gap/hole/occlusion,
-    especially for thin objects like a pen cap.
+    Using the median over the central part of the box (not just the
+    center point) is more robust - the center pixel might land on a
+    gap/hole/occlusion, especially for thin objects like a pen cap, while
+    the box corners are often background.
 
     Returns a RAW depth value (not yet normalized to 0-1) - use
-    normalize_depth_value() below with the frame's min/max to get the
+    normalize_depth_value() below with the frame's depth range to get the
     0-1 value that spatial_analyzer.py expects.
     """
-    x1, y1, x2, y2 = [int(v) for v in box]
+    x1, y1, x2, y2 = depth_sample_box(box)
     h, w = depth_map.shape
     x1, x2 = max(0, x1), min(w, x2)
     y1, y2 = max(0, y1), min(h, y2)
@@ -75,16 +90,24 @@ def sample_box_depth(depth_map: np.ndarray, box, method="median") -> float:
     return float(np.mean(region))
 
 
-def normalize_depth_value(raw_value: float, depth_map: np.ndarray) -> float:
+def depth_range(depth_map: np.ndarray) -> tuple[float, float]:
+    """The frame's 2nd-98th percentile, so a few extreme pixels can't
+    stretch the scale and make values jump between frames."""
+    d_min, d_max = np.percentile(depth_map, (2, 98))
+    return float(d_min), float(d_max)
+
+
+def normalize_depth_value(raw_value: float, depth_map: np.ndarray, d_range=None) -> float:
     """
-    Scale a raw depth value to 0-1 using THIS FRAME's own min/max.
+    Scale a raw depth value to 0-1 using THIS FRAME's own depth range.
 
     Important: depth maps are per-frame relative, not comparable across
     frames or videos. Always normalize against the same frame's depth_map
-    that the raw_value was sampled from - never reuse min/max from a
-    different frame.
+    that the raw_value was sampled from - never reuse a range from a
+    different frame. Pass d_range from depth_range() to avoid recomputing
+    it for every box in a frame.
     """
-    d_min, d_max = float(depth_map.min()), float(depth_map.max())
+    d_min, d_max = d_range or depth_range(depth_map)
     if d_max - d_min < 1e-6:
         return 0.5  # flat depth map (shouldn't really happen), neutral value
-    return (raw_value - d_min) / (d_max - d_min)
+    return float(np.clip((raw_value - d_min) / (d_max - d_min), 0.0, 1.0))

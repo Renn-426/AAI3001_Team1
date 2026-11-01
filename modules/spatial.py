@@ -122,6 +122,41 @@ def _zone(norm_dist: float) -> str:
     return "SAFE"
 
 
+def depth_adjusted_distance(child: Detection, hazard: Detection) -> tuple[float, float | None, float]:
+    """(planar distance, depth difference, effective distance) from child
+    to hazard, in child box heights. Depth difference is None and effective
+    equals planar unless both detections have a depth value."""
+    child_box = _box_xyxy(child)
+    norm_dist = _edge_distance(child_box, _box_xyxy(hazard)) / _box_height(child_box)
+
+    child_depth = getattr(child, "depth", None)
+    hz_depth = getattr(hazard, "depth", None)
+    if child_depth is None or hz_depth is None:
+        return norm_dist, None, norm_dist  # fall back to planar-only
+
+    depth_diff = abs(child_depth - hz_depth)
+    effective_dist = math.sqrt(norm_dist ** 2 + (DEPTH_DIFF_WEIGHT * depth_diff) ** 2)
+    return norm_dist, depth_diff, effective_dist
+
+
+class ScoreHold:
+    """Keeps the highest recent score for `seconds`, so one missed detection
+    doesn't drop a real danger to 0. Assessment itself stays per-frame."""
+
+    def __init__(self, seconds: float = 1.0) -> None:
+        self.seconds = seconds
+        self._score = 0.0
+        self._reason = ""
+        self._time = float("-inf")
+
+    def update(self, score: float, reason: str, now: float) -> tuple[float, str, bool]:
+        """Return (score, reason, held); held=True if an older score won."""
+        if score >= self._score or now - self._time > self.seconds:
+            self._score, self._reason, self._time = score, reason, now
+            return score, reason, False
+        return self._score, self._reason, True
+
+
 class BaseSpatialAnalyzer(ABC):
     @abstractmethod
     def assess(
@@ -157,32 +192,16 @@ class SpatialAnalyzer(BaseSpatialAnalyzer):
         # (If you expect multiple children, loop over all of them and
         # take the max risk across children instead.)
         child = max(children, key=lambda d: d.confidence)
-        child_box = _box_xyxy(child)
-        child_height = _box_height(child_box)
 
         best_score = 0.0
         best_reason = "No hazardous objects within risk range."
 
-        child_depth = getattr(child, "depth", None)
-
         for hz in hazards:
-            hz_box = _box_xyxy(hz)
             hz_label = _label(hz)
 
-            dist_px = _edge_distance(child_box, hz_box)
-            norm_dist = dist_px / child_height
-
             # --- depth-aware adjustment (only if both have depth values) ---
-            hz_depth = getattr(hz, "depth", None)
-            depth_note = ""
-            if child_depth is not None and hz_depth is not None:
-                depth_diff = abs(child_depth - hz_depth)
-                effective_dist = math.sqrt(
-                    norm_dist ** 2 + (DEPTH_DIFF_WEIGHT * depth_diff) ** 2
-                )
-                depth_note = f", depth diff {depth_diff:.2f}"
-            else:
-                effective_dist = norm_dist  # fall back to planar-only
+            _, depth_diff, effective_dist = depth_adjusted_distance(child, hz)
+            depth_note = "" if depth_diff is None else f", depth diff {depth_diff:.2f}"
 
             weight = DANGER_WEIGHTS.get(hz_label, DEFAULT_HAZARD_WEIGHT)
             proximity = max(0.0, 1.0 - (effective_dist / MAX_NORM_DIST))
