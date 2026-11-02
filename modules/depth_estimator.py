@@ -21,6 +21,12 @@ _depth_pipe = None
 # Box corners are usually background, which skews the median.
 DEPTH_SAMPLE_FRACTION = 0.5
 
+# Model input size (pixels, multiple of 14). The model's default is 518; 252
+# is ~6x faster on CPU and the output is still resized to the full frame.
+# On sample photos, box depths changed by at most 0.13 and the gap between
+# boxes by less than 0.1 - enough for "same depth as the child or not".
+DEPTH_INPUT_SIZE = 252
+
 
 def get_depth_pipeline(device=None):
     """Lazily load the model once and reuse it across frames (loading
@@ -32,6 +38,7 @@ def get_depth_pipeline(device=None):
             model="depth-anything/Depth-Anything-V2-Small-hf",
             device=device,  # None = auto (CPU if no GPU found)
         )
+        _depth_pipe.image_processor.size = {"height": DEPTH_INPUT_SIZE, "width": DEPTH_INPUT_SIZE}
     return _depth_pipe
 
 

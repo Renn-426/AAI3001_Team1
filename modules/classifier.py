@@ -128,8 +128,9 @@ class SpatialDemoClassifier(BaseClassifier):
         self._lock = threading.Lock()
         self._depth_lock = threading.Lock()
         self.depth_error = None
-        self.model.predict(np.zeros((480, 640, 3), np.uint8), conf=.2,
-                           imgsz=960, classes=self.wanted, verbose=False)
+        from modules.spatial_pipeline import HAZARD_CONF, IMGSZ
+        self.model.predict(np.zeros((480, 640, 3), np.uint8), conf=HAZARD_CONF,
+                           imgsz=IMGSZ, classes=self.wanted, verbose=False)
         # YOLO setup resets the CPU pool; limit it after setup so video has CPU time.
         torch.set_num_threads(2)
 
@@ -161,16 +162,16 @@ class SpatialDemoClassifier(BaseClassifier):
 
     def predict_with_depth(self, frame_bgr: np.ndarray, depth_map) -> ClassificationResult:
         """Live UI supplies its latest completed map, like the team's demo."""
-        from modules.tests.live_spatial_test import yolo_to_detections
         from modules.spatial import CHILD_LABELS
+        from modules.spatial_pipeline import CHILD_CONF, HAZARD_CONF, IMGSZ, yolo_to_detections
 
         if depth_map is not None and depth_map.shape != frame_bgr.shape[:2]:
             depth_map = None
         with self._lock:
-            result = self.model.predict(frame_bgr, conf=.2, imgsz=960,
+            result = self.model.predict(frame_bgr, conf=min(HAZARD_CONF, CHILD_CONF), imgsz=IMGSZ,
                                         classes=self.wanted, verbose=False)[0]
             detections = [d for d in yolo_to_detections(result, depth_map)
-                          if d.confidence >= (.35 if d.label in CHILD_LABELS else .2)]
+                          if d.confidence >= (CHILD_CONF if d.label in CHILD_LABELS else HAZARD_CONF)]
         score, reason = self.spatial.assess(detections, frame_bgr.shape[:2])
         status = "Relative depth active" if depth_map is not None else "Image-plane distance only; waiting for depth"
         if self.depth_error:

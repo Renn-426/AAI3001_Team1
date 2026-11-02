@@ -188,32 +188,31 @@ class SpatialAnalyzer(BaseSpatialAnalyzer):
         if not hazards:
             return 0.0, "No hazardous objects detected near the child."
 
-        # Use the highest-confidence child box as the reference point.
-        # (If you expect multiple children, loop over all of them and
-        # take the max risk across children instead.)
-        child = max(children, key=lambda d: d.confidence)
-
+        # Check every child against every hazard and report the most dangerous
+        # pair, so a hazard next to a less confidently detected child is not
+        # missed. Each pair uses its own child's box height and depth.
         best_score = 0.0
         best_reason = "No hazardous objects within risk range."
 
-        for hz in hazards:
-            hz_label = _label(hz)
+        for child in children:
+            for hz in hazards:
+                hz_label = _label(hz)
 
-            # --- depth-aware adjustment (only if both have depth values) ---
-            _, depth_diff, effective_dist = depth_adjusted_distance(child, hz)
-            depth_note = "" if depth_diff is None else f", depth diff {depth_diff:.2f}"
+                # --- depth-aware adjustment (only if both have depth values) ---
+                _, depth_diff, effective_dist = depth_adjusted_distance(child, hz)
+                depth_note = "" if depth_diff is None else f", depth diff {depth_diff:.2f}"
 
-            weight = DANGER_WEIGHTS.get(hz_label, DEFAULT_HAZARD_WEIGHT)
-            proximity = max(0.0, 1.0 - (effective_dist / MAX_NORM_DIST))
-            score = proximity * weight
+                weight = DANGER_WEIGHTS.get(hz_label, DEFAULT_HAZARD_WEIGHT)
+                proximity = max(0.0, 1.0 - (effective_dist / MAX_NORM_DIST))
+                score = proximity * weight
 
-            if score > best_score:
-                zone = _zone(effective_dist)
-                best_score = score
-                best_reason = (
-                    f"{hz.label} detected at {zone} proximity to child "
-                    f"(~{effective_dist:.2f}x child height away{depth_note}, "
-                    f"hazard confidence {hz.confidence:.2f})."
-                )
+                if score > best_score:
+                    zone = _zone(effective_dist)
+                    best_score = score
+                    best_reason = (
+                        f"{hz.label} detected at {zone} proximity to child "
+                        f"(~{effective_dist:.2f}x child height away{depth_note}, "
+                        f"hazard confidence {hz.confidence:.2f})."
+                    )
 
         return round(best_score, 3), best_reason
