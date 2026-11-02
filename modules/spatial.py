@@ -88,6 +88,12 @@ MAX_NORM_DIST = ZONE_THRESHOLDS["CAUTION"]  # beyond this, risk score is 0
 # whether foreground/background false positives go away on your footage.
 DEPTH_DIFF_WEIGHT = 3.0
 
+# The child's depth is read at the middle of their box (the body), so anything
+# held in the hand or lap is always a bit nearer the camera. When the hazard
+# overlaps the child and is nearer the camera, this much depth gap counts as
+# "within arm's reach" instead of distance.
+ARM_REACH_DEPTH = 0.3
+
 
 def _label(det: Detection) -> str:
     return det.label.lower().replace(" ", "_")
@@ -135,6 +141,8 @@ def depth_adjusted_distance(child: Detection, hazard: Detection) -> tuple[float,
         return norm_dist, None, norm_dist  # fall back to planar-only
 
     depth_diff = abs(child_depth - hz_depth)
+    if norm_dist == 0 and hz_depth > child_depth:      # in front of the body, touching the box
+        depth_diff = max(0.0, depth_diff - ARM_REACH_DEPTH)
     effective_dist = math.sqrt(norm_dist ** 2 + (DEPTH_DIFF_WEIGHT * depth_diff) ** 2)
     return norm_dist, depth_diff, effective_dist
 

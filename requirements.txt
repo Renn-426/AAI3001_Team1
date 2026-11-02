@@ -6,6 +6,7 @@ requests
 av
 pyyaml
 ultralytics>=8.1   # YOLOv8 (hazard model + person detector). Pulls in torch.
+transformers       # Depth Anything V2 (relative depth for spatial analysis)
 pytest
 
 # Training notebook dependencies (Google Colab supplies google.colab).

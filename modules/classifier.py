@@ -112,14 +112,23 @@ class DummyClassifier(BaseClassifier):
 
 
 class SpatialDemoClassifier(BaseClassifier):
-    """Adapt the spatial team's existing webcam demo to the UI's predict API."""
+    """Adapt the spatial team's existing webcam demo to the UI's predict API.
+
+    Stock COCO YOLO only: finds the person (child reference) plus the two hazards
+    COCO knows (knife, scissors). Used when Tze's trained model is not available.
+    """
+
+    mode = "Stock model: person, knife and scissors only"
+    person_weights = "yolov8s.pt"    # must also find knife/scissors here, so keep the bigger model
+    imgsz = 640                      # spatial_pipeline.IMGSZ; 960 finds smaller objects but is ~2x slower
 
     def __init__(self) -> None:
         import torch
         from ultralytics import YOLO
         from modules.spatial import CHILD_LABELS, DANGER_WEIGHTS, SpatialAnalyzer
 
-        self.weights_path = str(Path(__file__).resolve().parents[1] / "weights" / "yolov8s.pt")
+        # Downloaded automatically on first run if missing.
+        self.weights_path = str(Path(__file__).resolve().parents[1] / "weights" / self.person_weights)
         self.model = YOLO(self.weights_path)
         self.names = self.model.names
         self.wanted = [i for i, name in self.names.items()
@@ -128,9 +137,9 @@ class SpatialDemoClassifier(BaseClassifier):
         self._lock = threading.Lock()
         self._depth_lock = threading.Lock()
         self.depth_error = None
-        from modules.spatial_pipeline import HAZARD_CONF, IMGSZ
+        from modules.spatial_pipeline import HAZARD_CONF
         self.model.predict(np.zeros((480, 640, 3), np.uint8), conf=HAZARD_CONF,
-                           imgsz=IMGSZ, classes=self.wanted, verbose=False)
+                           imgsz=self.imgsz, classes=self.wanted, verbose=False)
         # YOLO setup resets the CPU pool; limit it after setup so video has CPU time.
         torch.set_num_threads(2)
 
@@ -160,18 +169,23 @@ class SpatialDemoClassifier(BaseClassifier):
                 self.depth_error = str(exc)
                 return None
 
+    def _detect(self, frame_bgr: np.ndarray, depth_map) -> list[Detection]:
+        """People (and, for the stock model, knife/scissors) with their depth."""
+        from modules.spatial import CHILD_LABELS
+        from modules.spatial_pipeline import CHILD_CONF, HAZARD_CONF, yolo_to_detections
+
+        with self._lock:
+            result = self.model.predict(frame_bgr, conf=min(HAZARD_CONF, CHILD_CONF),
+                                        imgsz=getattr(self, "imgsz", 640),
+                                        classes=self.wanted, verbose=False)[0]
+            return [d for d in yolo_to_detections(result, depth_map)
+                    if d.confidence >= (CHILD_CONF if d.label in CHILD_LABELS else HAZARD_CONF)]
+
     def predict_with_depth(self, frame_bgr: np.ndarray, depth_map) -> ClassificationResult:
         """Live UI supplies its latest completed map, like the team's demo."""
-        from modules.spatial import CHILD_LABELS
-        from modules.spatial_pipeline import CHILD_CONF, HAZARD_CONF, IMGSZ, yolo_to_detections
-
         if depth_map is not None and depth_map.shape != frame_bgr.shape[:2]:
             depth_map = None
-        with self._lock:
-            result = self.model.predict(frame_bgr, conf=min(HAZARD_CONF, CHILD_CONF), imgsz=IMGSZ,
-                                        classes=self.wanted, verbose=False)[0]
-            detections = [d for d in yolo_to_detections(result, depth_map)
-                          if d.confidence >= (CHILD_CONF if d.label in CHILD_LABELS else HAZARD_CONF)]
+        detections = self._detect(frame_bgr, depth_map)
         score, reason = self.spatial.assess(detections, frame_bgr.shape[:2])
         status = "Relative depth active" if depth_map is not None else "Image-plane distance only; waiting for depth"
         if self.depth_error:
@@ -181,9 +195,39 @@ class SpatialDemoClassifier(BaseClassifier):
         )
 
 
-def get_classifier() -> BaseClassifier:
-    """Run the spatial team's stock-YOLO demo through the existing UI.
+class HazardSpatialClassifier(SpatialDemoClassifier):
+    """Full pipeline: Tze's trained model finds and names the hazard (14 classes),
+    the stock COCO model finds the person used as the child reference, depth is
+    added to every box, and Ayumi & Nic's SpatialAnalyzer turns hazard type +
+    distance to the child into the danger score."""
 
-    Their model, input size, confidence thresholds, and conversion are retained.
-    """
-    return SpatialDemoClassifier()
+    imgsz = 640                      # people are large; 640 is enough and much faster on CPU
+    person_weights = "yolov8n.pt"    # only finds people here: the small model is ~2x faster
+
+    def __init__(self, hazard_weights: str) -> None:
+        from modules.detector import YOLODetector
+        from modules.spatial import CHILD_LABELS
+
+        super().__init__()           # person model + depth model, as in the spatial demo
+        self.wanted = [i for i, name in self.names.items() if name in CHILD_LABELS]
+        self.detector = YOLODetector(hazard_weights)
+        self.mode = f"Trained hazard model: {len(self.detector.names)} classes"
+        import torch
+        torch.set_num_threads(2)     # loading YOLO resets the CPU pool; keep cores for the video
+
+    def _detect(self, frame_bgr: np.ndarray, depth_map) -> list[Detection]:
+        from modules.spatial_pipeline import yolo_to_detections
+
+        people = super()._detect(frame_bgr, depth_map)
+        with self._lock:
+            hazards = yolo_to_detections(self.detector.predict_raw(frame_bgr), depth_map)
+        return people + hazards
+
+
+def get_classifier() -> BaseClassifier:
+    """Trained hazard model + spatial analysis when weights/final_best.pt exists,
+    otherwise the spatial team's stock-YOLO demo (knife and scissors only)."""
+    from modules.detector import find_weights
+
+    weights = find_weights()
+    return HazardSpatialClassifier(weights) if weights else SpatialDemoClassifier()
