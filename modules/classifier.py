@@ -6,6 +6,9 @@ their interfaces without changing the UI's predict() contract.
 from __future__ import annotations
 
 import random
+import os
+import threading
+from pathlib import Path
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -44,6 +47,8 @@ class ClassificationResult:
     score: float                      # 0.0 - 1.0 raw danger score
     detections: list[Detection] = field(default_factory=list)
     reason: str = ""                  # human-readable, goes into the Telegram alert
+    depth_status: str = ""
+    score_held: bool = False
 
 
 # Score -> level thresholds (tune later, or expose in the UI sidebar)
@@ -106,9 +111,78 @@ class DummyClassifier(BaseClassifier):
         )
 
 
-def get_classifier() -> BaseClassifier:
-    """Keep demo mode until detector/spatial implementations are ready.
+class SpatialDemoClassifier(BaseClassifier):
+    """Adapt the spatial team's existing webcam demo to the UI's predict API."""
 
-    Then construct SafetyClassifier here (see README for the wiring).
+    def __init__(self) -> None:
+        import torch
+        from ultralytics import YOLO
+        from modules.spatial import CHILD_LABELS, DANGER_WEIGHTS, SpatialAnalyzer
+
+        self.weights_path = str(Path(__file__).resolve().parents[1] / "weights" / "yolov8s.pt")
+        self.model = YOLO(self.weights_path)
+        self.names = self.model.names
+        self.wanted = [i for i, name in self.names.items()
+                       if name in CHILD_LABELS or name.lower().replace(" ", "_") in DANGER_WEIGHTS]
+        self.spatial = SpatialAnalyzer()
+        self._lock = threading.Lock()
+        self._depth_lock = threading.Lock()
+        self.depth_error = None
+        self.model.predict(np.zeros((480, 640, 3), np.uint8), conf=.2,
+                           imgsz=960, classes=self.wanted, verbose=False)
+        # YOLO setup resets the CPU pool; limit it after setup so video has CPU time.
+        torch.set_num_threads(2)
+
+        # Reuse the downloaded depth model without waiting for network metadata.
+        cache = Path(self.weights_path).parent / "huggingface"
+        if cache.is_dir():
+            os.environ.setdefault("HF_HOME", str(cache))
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        try:
+            from modules.depth_estimator import compute_depth_map
+            compute_depth_map(np.zeros((480, 640, 3), np.uint8))
+        except Exception as exc:
+            self.depth_error = str(exc)
+
+    def predict(self, frame_bgr: np.ndarray) -> ClassificationResult:
+        """Image/video tests use depth from the same tested frame."""
+        return self.predict_with_depth(frame_bgr, self.estimate_depth(frame_bgr))
+
+    def estimate_depth(self, frame_bgr: np.ndarray):
+        with self._depth_lock:
+            if self.depth_error:
+                return None
+            try:
+                from modules.depth_estimator import compute_depth_map
+                return compute_depth_map(frame_bgr)
+            except Exception as exc:
+                self.depth_error = str(exc)
+                return None
+
+    def predict_with_depth(self, frame_bgr: np.ndarray, depth_map) -> ClassificationResult:
+        """Live UI supplies its latest completed map, like the team's demo."""
+        from modules.tests.live_spatial_test import yolo_to_detections
+        from modules.spatial import CHILD_LABELS
+
+        if depth_map is not None and depth_map.shape != frame_bgr.shape[:2]:
+            depth_map = None
+        with self._lock:
+            result = self.model.predict(frame_bgr, conf=.2, imgsz=960,
+                                        classes=self.wanted, verbose=False)[0]
+            detections = [d for d in yolo_to_detections(result, depth_map)
+                          if d.confidence >= (.35 if d.label in CHILD_LABELS else .2)]
+        score, reason = self.spatial.assess(detections, frame_bgr.shape[:2])
+        status = "Relative depth active" if depth_map is not None else "Image-plane distance only; waiting for depth"
+        if self.depth_error:
+            status = f"Depth unavailable; image-plane distance only: {self.depth_error}"
+        return ClassificationResult(
+            score_to_level(score), score, detections, reason, depth_status=status,
+        )
+
+
+def get_classifier() -> BaseClassifier:
+    """Run the spatial team's stock-YOLO demo through the existing UI.
+
+    Their model, input size, confidence thresholds, and conversion are retained.
     """
-    return DummyClassifier()
+    return SpatialDemoClassifier()

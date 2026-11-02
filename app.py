@@ -10,6 +10,14 @@ from html import escape
 import os
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlsplit
+
+# Keep model CPU work from occupying every core in this UI process.
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+os.environ.setdefault("KMP_BLOCKTIME", "0")
 
 import cv2
 import numpy as np
@@ -22,6 +30,7 @@ from modules.classifier import (
 )
 from modules.notifier import TelegramNotifier
 from modules.subscriptions import SubscriptionStore, start_poller
+from modules.spatial import CHILD_LABELS, DANGER_WEIGHTS, ScoreHold
 
 
 st.set_page_config(page_title="Child Safety Monitor", page_icon="🛡️", layout="wide")
@@ -241,11 +250,42 @@ class TimedClassifier(BaseClassifier):
     def __init__(self, delegate: BaseClassifier):
         self.delegate = delegate
         self.last_completed_at = 0.0
+        self._depth_pool = ThreadPoolExecutor(max_workers=1, initializer=self._configure_depth_thread) if hasattr(delegate, "predict_with_depth") else None
+        self._depth_future = None
+        self._depth_map = None
+        self._depth_at = 0.0
+        self._submitted_at = 0.0
+        self._hold = ScoreHold(seconds=1.0)
+
+    @staticmethod
+    def _configure_depth_thread():
+        import torch
+        torch.set_num_threads(1)
 
     def predict(self, frame_bgr: np.ndarray) -> ClassificationResult:
-        result = self.delegate.predict(frame_bgr)
+        if self._depth_pool is not None:
+            if self._depth_future is not None and self._depth_future.done():
+                self._depth_map = self._depth_future.result()
+                self._depth_at = self._submitted_at
+                self._depth_future = None
+            if self._depth_future is None and not self.delegate.depth_error:
+                self._submitted_at = time.monotonic()
+                self._depth_future = self._depth_pool.submit(self.delegate.estimate_depth, frame_bgr.copy())
+            result = self.delegate.predict_with_depth(frame_bgr, self._depth_map)
+            if self._depth_map is not None:
+                result.depth_status += f" · Map age {time.monotonic() - self._depth_at:.1f}s"
+            result.score, result.reason, result.score_held = self._hold.update(
+                result.score, result.reason, time.monotonic())
+            from modules.classifier import score_to_level
+            result.level = score_to_level(result.score)
+        else:
+            result = self.delegate.predict(frame_bgr)
         self.last_completed_at = time.monotonic()
         return result
+
+    def close(self):
+        if self._depth_pool is not None:
+            self._depth_pool.shutdown(wait=False, cancel_futures=True)
 
 
 def make_processor():
@@ -341,10 +381,18 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
             state_box("Assessment outdated", "Waiting for a fresh result. Previous result is hidden.", "warning")
         elif result is None:
             state_box("Waiting for assessment", "Camera and model readiness are shown separately.")
+        elif not spatial_connected:
+            state_box("Detection active", result.reason)
+        elif not result.score_held and not any(d.label in CHILD_LABELS for d in result.detections):
+            state_box("No reference person detected", "Proximity cannot be assessed without a person in view.")
+        elif not result.score_held and not any(d.label.lower().replace(" ", "_") in DANGER_WEIGHTS for d in result.detections):
+            state_box("No hazard detected", "The model has not detected a supported hazard in this frame.")
         else:
             tone = f"severity-{result.level.name.lower()}"
             state_box(result.level.name, result.reason or "No explanation provided.", tone)
             st.caption(f"Danger score: {result.score:.2f}")
+            if result.score_held:
+                st.caption("Recent risk held briefly while the next detection arrives.")
 
     with st.container(border=True, key=f"preview_{prefix}_objects"):
         panel_title("Detected objects", "objects")
@@ -371,7 +419,8 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
                       "The danger level currently comes from the detected objects only.", compact=True)
         elif result is not None and not (error or stale or idle):
             st.write(result.reason or "No spatial explanation provided.")
-            st.caption("Distance measurements are not exposed by the current classifier interface.")
+            st.caption(result.depth_status)
+            st.caption("Relative distances use the reference person's box height, not metres. A person detection does not identify age.")
         else:
             state_box("Proximity unavailable", "Waiting for current spatial analysis.", compact=True)
 
@@ -460,8 +509,9 @@ with navigation:
                 st.caption("Demo model (random scores). Put the notebook's `final_best.pt` in "
                            "`weights/` and restart to use the trained YOLOv8 detector.")
             else:
-                st.caption(f"Model: YOLOv8 · {os.path.basename(classifier.detector.weights_path)} · "
-                           f"{len(classifier.detector.names)} classes")
+                detector = getattr(classifier, "detector", classifier)
+                st.caption(f"Model: YOLOv8 · {os.path.basename(detector.weights_path)} · "
+                           f"{len(detector.names)} classes")
             quality = st.radio("Camera quality", ["Smooth (480p)", "Sharp (720p)"], horizontal=True,
                                key="preview_quality",
                                help="480p lags less: every frame is sent to the server and back. "
@@ -561,14 +611,15 @@ with tab_live:
                                     "frameRate": {"ideal": 20, "max": 24}}
                 if control["device"]:
                     video_constraint["deviceId"] = {"exact": control["device"]}
+                local_preview = urlsplit(st.context.url).hostname in {"localhost", "127.0.0.1", "::1"}
                 ctx = webrtc_streamer(
                     key="preview-camera", mode=WebRtcMode.SENDRECV,
-                    rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+                    rtc_configuration=RTCConfiguration({"iceServers": [] if local_preview else [{"urls": ["stun:stun.l.google.com:19302"]}]}),
                     video_processor_factory=make_processor,
                     media_stream_constraints={"video": video_constraint, "audio": False},
                     desired_playing_state=bool(control["running"]), media_toggle_controls=False,
                     async_processing=True,
-                    video_html_attrs={"autoPlay": True, "controls": False, "muted": True, "style": {"width": "100%", "height": "calc(100vh - 16px)", "objectFit": "cover", "objectPosition": "center", "backgroundColor": "#e9eef4", "borderRadius": "8px"}},
+                    video_html_attrs={"autoPlay": True, "controls": False, "muted": True, "style": {"width": "100%", "height": "calc(100vh - 16px)", "objectFit": "contain", "objectPosition": "center", "backgroundColor": "#e9eef4", "borderRadius": "8px"}},
                 )
 
     def live_snapshot():

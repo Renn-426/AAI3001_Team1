@@ -86,6 +86,10 @@ class CameraProcessor(VideoProcessorBase):
         img = draw_result(frame.to_ndarray(format="bgr24"), result, banner=False)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
+    async def recv_queued(self, frames: list[av.VideoFrame]) -> list[av.VideoFrame]:
+        """Skip queued old frames so a busy detector cannot delay the preview."""
+        return [self.recv(frames[-1])]
+
     def on_ended(self) -> None:
         self._stop.set()
 
@@ -117,6 +121,9 @@ class CameraProcessor(VideoProcessorBase):
             wait = start + 1.0 / max(self.max_infer_fps, 0.1) - now
             if wait > 0:
                 time.sleep(wait)
+
+        if self.classifier is not None and hasattr(self.classifier, "close"):
+            self.classifier.close()
 
 
 # ---------------- uploaded video: same classifier, offline ----------------

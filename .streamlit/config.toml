@@ -6,3 +6,8 @@ primaryColor = "#10888e"
 backgroundColor = "#f7f9fc"
 secondaryBackgroundColor = "#edf1f6"
 textColor = "#102240"
+
+[runner]
+# Live fragments refresh several times a second. Keep normal Python GC,
+# without forcing a full model-heap scan after every panel refresh.
+postScriptGC = false

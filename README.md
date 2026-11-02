@@ -1,8 +1,30 @@
 # Child Safety Monitor
 
 Streamlit UI for live camera monitoring, image testing, and Telegram alerts.
-The app currently uses `DummyClassifier`, which generates random danger scores;
-real detection and spatial risk assessment are not connected yet.
+The UI connects the spatial team's stock-YOLO demo through `SpatialDemoClassifier`.
+It uses their detection conversion, original spatial calculation and depth helpers.
+The trained hazard detector remains a separate integration step.
+
+The preview uses local `weights/yolov8s.pt`, a 960-pixel model input, hazard
+confidence 0.2 and person confidence 0.35, matching the team's test script.
+Supported stock-model spatial classes are person, scissors and knife. A person
+stands in for the child reference; this model does not identify age.
+
+The UI owns one browser camera stream; it imports the demo's helper functions
+without running its camera-opening `main()`. Live depth runs in the background
+with one outstanding frame, and the team's one-second `ScoreHold` is per stream.
+Image/video tests compute depth from each tested frame. The spatial and depth
+source files remain unchanged. No object tracker or additional Python module
+was added.
+
+CPU depth can take several seconds. The proximity panel shows the map's age;
+video and detection can stay live while depth-based distance updates lag behind.
+Observed map ages ranged from approximately 5–15 seconds, so current boxes may
+be assessed against older depth data. Duplicate detections and live proximity
+accuracy still need model/pipeline validation; functional UI integration does
+not establish that a displayed SAFE level describes the current scene accurately.
+Distinguish this timing limitation from the spatial risk formula when refining
+the pipeline. Distances are relative box-height units, not metres.
 
 ## Run
 
@@ -14,7 +36,7 @@ python -m venv .venv
 
 The improved UI is in `app.py`: live camera controls, image and video testing, and four
 separate status cards for Assessment, Detected objects, Proximity assessment,
-and Caregiver alerts. Simulated results are shown directly with severity colours.
+and Caregiver alerts. The assessment displays the team's score and explanation.
 The Settings button is on the navigation row. Automatic Telegram alerts are
 disabled while `DummyClassifier` is selected; manual test messages are available.
 
@@ -31,7 +53,7 @@ The single `requirements.txt` includes both UI and training dependencies.
 | `modules/notifier.py` | Telegram send queue (rate limits, photo reuse) and per-room cooldown | Liv & Ren |
 | `modules/subscriptions.py` | Homes, rooms, members (SQLite) and bot commands | Liv & Ren |
 | `modules/detector.py` | Detection interface and unfinished YOLO model skeleton | Tze |
-| `modules/spatial.py` | Spatial interface and unfinished proximity/risk skeleton | Ayumi & Nic |
+| `modules/spatial.py` | Spatial interface and proximity/risk calculation | Ayumi & Nic |
 | `modules/classifier.py` | Shared result types and pipeline integration | Shared |
 | `Child_Safety_Hazard_Detection_YOLOv8.ipynb` | Augmentation, training, and evaluation | Tze |
 
@@ -61,7 +83,7 @@ the score to `SAFE`, `LOW`, `MEDIUM`, or `HIGH`. The UI continues to call
 `predict(frame_bgr) -> ClassificationResult`, containing `level`, `score`,
 `detections`, and `reason`.
 
-Once both implementations are ready, replace the body of `get_classifier()`
+Once the trained detector is ready, replace the demo factory in `get_classifier()`
 in `modules/classifier.py` with:
 
 ```python
@@ -74,9 +96,10 @@ return SafetyClassifier(
 )
 ```
 
-The skeletons intentionally raise `NotImplementedError` until implemented.
-Keep `DummyClassifier` selected while building the UI. After switching, use
-the **Test image** tab to check boxes, scores, and explanations.
+The detector skeleton still raises `NotImplementedError` until implemented.
+`DummyClassifier` remains the labelled fallback if model loading fails. Use
+the **Test image** tab to check boxes, scores, and explanations. The adapter's
+depth/score regression check runs with `python -m pytest modules/tests/test_depth_logic.py -q`.
 
 ## Telegram alerts
 

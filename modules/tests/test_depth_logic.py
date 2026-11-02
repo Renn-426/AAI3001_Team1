@@ -35,3 +35,49 @@ dets = [
 ]
 score, reason = analyzer.assess(dets, (480, 640))
 print(f"  score={score}  reason={reason}")
+
+
+def test_ui_adapter_preserves_demo_depth_and_score():
+    """The UI bridge must reproduce the demo's 0.11 depth-difference example."""
+    import threading
+    from types import SimpleNamespace
+    import numpy as np
+    from modules.classifier import SpatialDemoClassifier, DangerLevel
+    from modules.spatial import SpatialAnalyzer
+
+    def box(coords, class_id, confidence):
+        return SimpleNamespace(xyxy=np.array([coords]), cls=np.array([class_id]),
+                               conf=np.array([confidence]))
+
+    prediction = SimpleNamespace(
+        names={0: "person", 76: "scissors"},
+        boxes=[box((100, 100, 300, 400), 0, .9), box((200, 200, 260, 260), 76, .85)],
+    )
+    bridge = object.__new__(SpatialDemoClassifier)
+    bridge.model = SimpleNamespace(predict=lambda *args, **kwargs: [prediction])
+    bridge.wanted = [0, 76]
+    bridge._lock = threading.Lock()
+    bridge.spatial = SpatialAnalyzer()
+    bridge.depth_error = None
+
+    depth = np.zeros((480, 640), dtype=float)
+    depth[:, 320:] = 1.0
+    depth[175:325, 150:250] = .03
+    depth[215:245, 215:245] = .14
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    result = bridge.predict_with_depth(frame, depth)
+    assert result.score == .801
+    assert result.level == DangerLevel.HIGH
+    assert "~0.33x" in result.reason and "depth diff 0.11" in result.reason
+    assert result.depth_status == "Relative depth active"
+
+    planar = bridge.predict_with_depth(frame, None)
+    assert planar.score == .9
+    assert "depth diff" not in planar.reason
+    assert "Image-plane distance only" in planar.depth_status
+
+    bridge.depth_error = "test depth failure"
+    failed_depth = bridge.predict_with_depth(frame, None)
+    assert failed_depth.score == .9
+    assert "Depth unavailable" in failed_depth.depth_status
+    assert "test depth failure" in failed_depth.depth_status
