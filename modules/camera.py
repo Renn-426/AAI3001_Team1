@@ -5,10 +5,13 @@ has no camera. WebRTC streams the *viewer's* browser camera to the server, and
 it also works locally.
 
 The model runs on its own background thread: a slow model lowers the
-detection rate but never freezes the video. To keep lag low, recv() does as
-little as possible: frames are passed straight back untouched unless boxes
-must be drawn, and conversion to a numpy image happens only when the model
-or an alert actually needs one.
+detection rate but never freezes the video. To keep lag low, recv() passes
+frames straight back untouched unless boxes must be drawn.
+
+Each frame is converted to numpy ONCE, here in the video thread; only that
+numpy copy is shared with other threads. Converting the same av.VideoFrame
+from two threads (e.g. the model thread and the video encoder) crashes
+FFmpeg's scaler (segfault in libswscale) and kills the server.
 """
 from __future__ import annotations
 
@@ -35,12 +38,12 @@ def draw_result(img, result: ClassificationResult, banner: bool = True):
             # Blue = person (child reference), yellow = hazard.
             color = (255, 160, 0) if d.label in CHILD_LABELS else (0, 255, 255)
             x1, y1, x2, y2 = d.bbox
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             text = f"{d.label} {d.confidence:.2f}"
             if d.depth is not None:           # 0-1 relative depth, 1 = closest
                 text += f" d={d.depth:.2f}"
             cv2.putText(img, text, (x1, max(y1 - 6, 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     if not banner:                            # live view: the Assessment card already shows the level
         return img
     hex_c = result.level.color.lstrip("#")
@@ -60,7 +63,7 @@ class CameraProcessor(VideoProcessorBase):
         self.max_infer_fps = 5.0              # cap on model runs per second (saves CPU)
         self.draw_overlay = True
         self._frame_id = 0
-        self._latest_av: av.VideoFrame | None = None   # newest frame, not yet converted
+        self._latest_frame = None             # newest frame as BGR numpy (shared across threads)
         self._latest_result: ClassificationResult | None = None
         self.infer_fps = 0.0                  # measured model runs per second
         self.latency_ms = 0.0                 # time of the last predict() call
@@ -76,20 +79,20 @@ class CameraProcessor(VideoProcessorBase):
 
     @property
     def latest_frame(self):
-        """Newest frame as a BGR numpy image (converted on demand)."""
+        """Newest frame as a BGR numpy image."""
         with self._lock:
-            frame = self._latest_av
-        return None if frame is None else frame.to_ndarray(format="bgr24")
+            return None if self._latest_frame is None else self._latest_frame.copy()
 
     # ---- called by webrtc for every frame (runs in a worker thread) ----
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")    # the only place a frame is converted
         with self._lock:
-            self._latest_av = frame
+            self._latest_frame = img
             self._frame_id += 1
             result = self._latest_result
         if not (self.draw_overlay and result is not None and result.detections):
-            return frame                      # nothing to draw: no conversion, no copy
-        img = draw_result(frame.to_ndarray(format="bgr24"), result, banner=False)
+            return frame                      # nothing to draw: send the original back
+        img = draw_result(img, result, banner=False)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     async def recv_queued(self, frames: list[av.VideoFrame]) -> list[av.VideoFrame]:
@@ -104,13 +107,13 @@ class CameraProcessor(VideoProcessorBase):
         last_id, last_done = 0, time.perf_counter()
         while not self._stop.is_set():
             with self._lock:
-                av_frame, fid = self._latest_av, self._frame_id
-            if self.classifier is None or av_frame is None or fid == last_id:
+                frame, fid = self._latest_frame, self._frame_id
+            if self.classifier is None or frame is None or fid == last_id:
                 time.sleep(0.02)
                 continue
             start = time.perf_counter()
             try:
-                result = self.classifier.predict(av_frame.to_ndarray(format="bgr24"))
+                result = self.classifier.predict(frame)
                 self.error = None
             except Exception as e:            # a model crash must not kill the video
                 self.error = repr(e)

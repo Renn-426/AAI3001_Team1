@@ -245,6 +245,9 @@ home = store.home_by_key(home_key) if home_key else None
 rooms = store.rooms(home.id) if home else {}
 
 
+SCORE_FALL_PER_S = 0.25   # how fast the live danger score may drop (score units per second)
+
+
 class TimedClassifier(BaseClassifier):
     """Track result freshness within this preview, without changing shared modules."""
 
@@ -257,6 +260,7 @@ class TimedClassifier(BaseClassifier):
         self._depth_at = 0.0
         self._submitted_at = 0.0
         self._hold = ScoreHold(seconds=1.0)
+        self._shown, self._shown_at = 0.0, time.monotonic()    # score shown last time
 
     @staticmethod
     def _configure_depth_thread():
@@ -283,6 +287,13 @@ class TimedClassifier(BaseClassifier):
                                        "image-plane distance only")
             result.score, result.reason, result.score_held = self._hold.update(
                 result.score, result.reason, time.monotonic())
+            # Rise at once (never delay a warning) but fall at most SCORE_FALL_PER_S,
+            # so one odd frame or depth map can't flip HIGH -> LOW -> HIGH.
+            now = time.monotonic()
+            floor = self._shown - SCORE_FALL_PER_S * (now - self._shown_at)
+            if result.score < floor:
+                result.score, result.score_held = round(floor, 3), True
+            self._shown, self._shown_at = result.score, now
             from modules.classifier import score_to_level
             result.level = score_to_level(result.score)
         else:
@@ -420,12 +431,18 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
         elif not result.detections:
             state_box("No objects detected", "An empty result does not establish that the scene is safe.", compact=True)
         else:
-            for item in result.detections:
+            # People first (child reference), then hazards from most to least dangerous.
+            def role(d):
+                key = d.label.lower().replace(" ", "_")
+                if key in CHILD_LABELS:
+                    return 0, "Child reference"
+                weight = DANGER_WEIGHTS.get(key)
+                return (1, f"Hazard · severity {weight:.2f}") if weight is not None else (2, "Other object")
+            for item in sorted(result.detections, key=lambda d: (role(d)[0], -d.confidence)):
                 depth = "" if item.depth is None else f" · depth {item.depth:.2f}"
                 st.html(
-                    f'<div class="object-row"><b>{escape(item.label)}</b><span>{item.confidence:.0%} confidence{depth}</span></div>',
-
-                )
+                    f'<div class="object-row"><b>{escape(item.label.replace("_", " "))}</b>'
+                    f'<span>{escape(role(item)[1])} · {item.confidence:.0%}{depth}</span></div>')
             if any(item.depth is not None for item in result.detections):
                 st.caption("Depth is relative within this frame: 1 = closest to the camera, 0 = farthest.")
     with st.container(border=True, key=f"preview_{prefix}_proximity"):

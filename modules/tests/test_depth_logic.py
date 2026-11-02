@@ -66,9 +66,11 @@ def test_ui_adapter_preserves_demo_depth_and_score():
     depth[215:245, 215:245] = .14
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     result = bridge.predict_with_depth(frame, depth)
-    assert result.score == .801
+    # Scissors overlap the person and are 0.11 nearer the camera: held in the
+    # hand, within ARM_REACH_DEPTH, so depth adds no distance.
+    assert result.score == .9
     assert result.level == DangerLevel.HIGH
-    assert "~0.33x" in result.reason and "depth diff 0.11" in result.reason
+    assert "depth diff 0.00" in result.reason
     assert result.depth_status == "Relative depth active"
 
     planar = bridge.predict_with_depth(frame, None)
@@ -123,3 +125,13 @@ def test_extra_person_far_away_keeps_single_child_score():
     alone = analyzer.assess([child, hazard], (480, 640))
     with_other = analyzer.assess([far_person, child, hazard], (480, 640))
     assert with_other == alone
+
+
+def test_hazard_held_in_front_stays_high_but_hazard_behind_drops():
+    from modules.spatial import SpatialAnalyzer, Detection
+    person = Detection("person", .9, (200, 60, 440, 480), .6)
+    held = Detection("scissors", .7, (300, 250, 360, 330), .85)     # in the hand, nearer the camera
+    behind = Detection("scissors", .7, (300, 250, 360, 330), .1)    # same pixels, far behind the child
+    a = SpatialAnalyzer()
+    assert a.assess([person, held], (480, 640))[0] == .9
+    assert a.assess([person, behind], (480, 640))[0] < .5
