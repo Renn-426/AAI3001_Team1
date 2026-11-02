@@ -136,8 +136,9 @@ class SpatialDemoClassifier(BaseClassifier):
         self._lock = threading.Lock()
         self._depth_lock = threading.Lock()
         self.depth_error = None
-        self.model.predict(np.zeros((480, 640, 3), np.uint8), conf=.2,
-                           imgsz=self.imgsz, classes=self.wanted, verbose=False)
+        from modules.spatial_pipeline import HAZARD_CONF, IMGSZ
+        self.model.predict(np.zeros((480, 640, 3), np.uint8), conf=HAZARD_CONF,
+                           imgsz=IMGSZ, classes=self.wanted, verbose=False)
         # YOLO setup resets the CPU pool; limit it after setup so video has CPU time.
         torch.set_num_threads(2)
 
@@ -167,10 +168,10 @@ class SpatialDemoClassifier(BaseClassifier):
                 self.depth_error = str(exc)
                 return None
 
-    def _detect(self, frame_bgr: np.ndarray, depth_map) -> list[Detection]:
-        """People (and, for the stock model, knife/scissors) with their depth."""
-        from modules.tests.live_spatial_test import yolo_to_detections
+    def predict_with_depth(self, frame_bgr: np.ndarray, depth_map) -> ClassificationResult:
+        """Live UI supplies its latest completed map, like the team's demo."""
         from modules.spatial import CHILD_LABELS
+        from modules.spatial_pipeline import CHILD_CONF, HAZARD_CONF, IMGSZ, yolo_to_detections
 
         with self._lock:
             result = self.model.predict(frame_bgr, conf=.2, imgsz=getattr(self, "imgsz", 960),
@@ -182,7 +183,11 @@ class SpatialDemoClassifier(BaseClassifier):
         """Live UI supplies its latest completed map, like the team's demo."""
         if depth_map is not None and depth_map.shape != frame_bgr.shape[:2]:
             depth_map = None
-        detections = self._detect(frame_bgr, depth_map)
+        with self._lock:
+            result = self.model.predict(frame_bgr, conf=min(HAZARD_CONF, CHILD_CONF), imgsz=IMGSZ,
+                                        classes=self.wanted, verbose=False)[0]
+            detections = [d for d in yolo_to_detections(result, depth_map)
+                          if d.confidence >= (CHILD_CONF if d.label in CHILD_LABELS else HAZARD_CONF)]
         score, reason = self.spatial.assess(detections, frame_bgr.shape[:2])
         status = "Relative depth active" if depth_map is not None else "Image-plane distance only; waiting for depth"
         if self.depth_error:

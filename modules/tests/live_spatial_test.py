@@ -15,6 +15,10 @@ Run from the repo root:
     python modules/tests/live_spatial_test.py --extra-hazards "cell phone,cup"
     python modules/tests/live_spatial_test.py --show-all --conf 0.15 --model yolov8s.pt
     python modules/tests/live_spatial_test.py --zoom
+    python modules/tests/live_spatial_test.py --imgsz 960   (smaller objects, slower)
+
+Detection conversion and default thresholds come from modules/spatial_pipeline.py,
+shared with the app.
 
 Keys: q = quit, d = toggle depth view, s = save screenshot
 """
@@ -34,6 +38,9 @@ sys.path.insert(0, REPO_ROOT)
 from modules.classifier import Detection, DangerLevel, score_to_level
 from modules.spatial import (
     SpatialAnalyzer, ScoreHold, CHILD_LABELS, DANGER_WEIGHTS, DEFAULT_HAZARD_WEIGHT,
+)
+from modules.spatial_pipeline import (
+    CHILD_CONF, HAZARD_CONF, IMGSZ, colorize_depth, yolo_to_detections,
 )
 
 WHITE = (255, 255, 255)
@@ -99,31 +106,6 @@ class DepthWorker(threading.Thread):
         return f"depth: {self.seconds:.2f}s per map"
 
 
-def yolo_to_detections(result, depth_map, offset=(0, 0)) -> list[Detection]:
-    """Convert one ultralytics Results into Detections, adding each box's
-    0-1 depth when a depth map is available. offset moves boxes from a crop
-    back to full-frame pixels."""
-    if depth_map is not None:
-        from modules.depth_estimator import depth_range, normalize_depth_value, sample_box_depth
-        d_range = depth_range(depth_map)
-
-    ox, oy = offset
-    dets = []
-    for b in result.boxes:
-        x1, y1, x2, y2 = (int(v) for v in b.xyxy[0].tolist())
-        box = (x1 + ox, y1 + oy, x2 + ox, y2 + oy)
-        depth = None
-        if depth_map is not None:
-            depth = normalize_depth_value(sample_box_depth(depth_map, box), depth_map, d_range)
-        dets.append(Detection(
-            label=result.names[int(b.cls[0])],
-            confidence=float(b.conf[0]),
-            bbox=box,
-            depth=depth,
-        ))
-    return dets
-
-
 def box_iou(a, b) -> float:
     w = min(a[2], b[2]) - max(a[0], b[0])
     h = min(a[3], b[3]) - max(a[1], b[1])
@@ -184,26 +166,19 @@ def draw(frame, dets, level, score, reason, status):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1)
 
 
-def depth_view(depth_map, shape):
-    h, w = shape[:2]
-    gray = cv2.normalize(np.asarray(depth_map, dtype=np.float32), None, 0, 255,
-                         cv2.NORM_MINMAX).astype(np.uint8)
-    return cv2.applyColorMap(cv2.resize(gray, (w, h)), cv2.COLORMAP_INFERNO)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--camera", type=int, default=0, help="webcam index")
     parser.add_argument("--model", default="yolov8s.pt", help="COCO YOLOv8 weights")
-    parser.add_argument("--conf", type=float, default=0.2, help="minimum hazard confidence")
-    parser.add_argument("--child-conf", type=float, default=0.35,
+    parser.add_argument("--conf", type=float, default=HAZARD_CONF, help="minimum hazard confidence")
+    parser.add_argument("--child-conf", type=float, default=CHILD_CONF,
                         help="minimum child confidence (kept higher to avoid false children)")
     parser.add_argument("--zoom", action="store_true",
                         help="search a crop around the child too; finds held objects but is slower")
     parser.add_argument("--hold", type=float, default=1.0,
                         help="seconds to keep the highest recent score (0 = off)")
-    parser.add_argument("--imgsz", type=int, default=960,
+    parser.add_argument("--imgsz", type=int, default=IMGSZ,
                         help="YOLO input size; larger helps small objects, smaller runs faster")
     parser.add_argument("--show-all", action="store_true",
                         help="also draw every other COCO detection in grey (not scored)")
@@ -283,7 +258,7 @@ def main():
 
         view = frame
         if show_depth and depth_map is not None:
-            view = np.hstack([frame, depth_view(depth_map, frame.shape)])
+            view = np.hstack([frame, colorize_depth(depth_map, (frame.shape[1], frame.shape[0]))])
         cv2.imshow("Live spatial test (q quit, d depth, s save)", view)
 
         key = cv2.waitKey(1) & 0xFF

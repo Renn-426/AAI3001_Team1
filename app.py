@@ -31,6 +31,7 @@ from modules.classifier import (
 from modules.notifier import TelegramNotifier
 from modules.subscriptions import SubscriptionStore, start_poller
 from modules.spatial import CHILD_LABELS, DANGER_WEIGHTS, ScoreHold
+from modules.spatial_pipeline import MAX_DEPTH_AGE, colorize_depth
 
 
 st.set_page_config(page_title="Child Safety Monitor", page_icon="🛡️", layout="wide")
@@ -231,7 +232,7 @@ ss = st.session_state
 for name, default in {
     "preview_history": [], "preview_danger_since": None,
     "preview_last_alert": 0.0, "preview_image_result": None,
-    "preview_image_frame": None, "preview_image_ms": None,
+    "preview_image_frame": None, "preview_image_ms": None, "preview_image_depth": None,
     "preview_image_key": None, "preview_image_error": None,
     "preview_video_report": None, "preview_video_key": None,
 }.items():
@@ -260,7 +261,7 @@ class TimedClassifier(BaseClassifier):
     @staticmethod
     def _configure_depth_thread():
         import torch
-        torch.set_num_threads(1)
+        torch.set_num_threads(2)
 
     def predict(self, frame_bgr: np.ndarray) -> ClassificationResult:
         if self._depth_pool is not None:
@@ -271,9 +272,15 @@ class TimedClassifier(BaseClassifier):
             if self._depth_future is None and not self.delegate.depth_error:
                 self._submitted_at = time.monotonic()
                 self._depth_future = self._depth_pool.submit(self.delegate.estimate_depth, frame_bgr.copy())
-            result = self.delegate.predict_with_depth(frame_bgr, self._depth_map)
-            if self._depth_map is not None:
-                result.depth_status += f" · Map age {time.monotonic() - self._depth_at:.1f}s"
+            # An old map can predate a hazard and hide it; fall back to planar distance.
+            age = None if self._depth_map is None else time.monotonic() - self._depth_at
+            fresh = age is not None and age <= MAX_DEPTH_AGE
+            result = self.delegate.predict_with_depth(frame_bgr, self._depth_map if fresh else None)
+            if fresh:
+                result.depth_status += f" · Map age {age:.1f}s"
+            elif age is not None and not self.delegate.depth_error:
+                result.depth_status = (f"Depth map too old ({age:.1f}s > {MAX_DEPTH_AGE:g}s); "
+                                       "image-plane distance only")
             result.score, result.reason, result.score_held = self._hold.update(
                 result.score, result.reason, time.monotonic())
             from modules.classifier import score_to_level
@@ -282,6 +289,14 @@ class TimedClassifier(BaseClassifier):
             result = self.delegate.predict(frame_bgr)
         self.last_completed_at = time.monotonic()
         return result
+
+    @property
+    def latest_depth(self):
+        """(latest depth map, its age in seconds), or (None, None) before the first map."""
+        depth_map = self._depth_map
+        if depth_map is None:
+            return None, None
+        return depth_map, time.monotonic() - self._depth_at
 
     def close(self):
         if self._depth_pool is not None:
@@ -405,17 +420,14 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
         elif not result.detections:
             state_box("No objects detected", "An empty result does not establish that the scene is safe.", compact=True)
         else:
-            # People first (child reference), then hazards from most to least dangerous.
-            def role(d):
-                key = d.label.lower().replace(" ", "_")
-                if key in CHILD_LABELS:
-                    return 0, "Child reference"
-                weight = DANGER_WEIGHTS.get(key)
-                return (1, f"Hazard · severity {weight:.2f}") if weight is not None else (2, "Other object")
-            for item in sorted(result.detections, key=lambda d: (role(d)[0], -d.confidence)):
+            for item in result.detections:
+                depth = "" if item.depth is None else f" · depth {item.depth:.2f}"
                 st.html(
-                    f'<div class="object-row"><b>{escape(item.label.replace("_", " "))}</b>'
-                    f'<span>{escape(role(item)[1])} · {item.confidence:.0%}</span></div>')
+                    f'<div class="object-row"><b>{escape(item.label)}</b><span>{item.confidence:.0%} confidence{depth}</span></div>',
+
+                )
+            if any(item.depth is not None for item in result.detections):
+                st.caption("Depth is relative within this frame: 1 = closest to the camera, 0 = farthest.")
     with st.container(border=True, key=f"preview_{prefix}_proximity"):
         panel_title("Proximity assessment", "proximity")
         if is_demo:
@@ -536,6 +548,9 @@ with navigation:
                                     "Applies the next time the camera starts.")
             max_fps = st.slider("Max model runs / second", 1, 15, 5, key="preview_fps")
             show_overlay = st.checkbox("Draw detection overlay", value=True, disabled=is_demo, key="preview_overlay")
+            show_depth = st.toggle("Show depth map", value=False, disabled=is_demo, key="preview_show_depth",
+                                   help="Coloured relative depth (brighter = closer), like pressing d in "
+                                        "the live test script. Shown under the live camera and tested images.")
             if is_demo:
                 st.caption("Random danger banners are hidden from the demo camera.")
             st.divider()
@@ -679,8 +694,24 @@ with tab_live:
         render_assessment(result, error=error, stale=stale, idle=not playing)
         render_alerts(result, processor, eligible=playing and not error and not stale)
 
+    @st.fragment(run_every=1.0)
+    def depth_preview():
+        if not show_depth or is_demo:
+            return
+        processor, playing, _, _, _ = live_snapshot()
+        depth_map, age = (None, None)
+        if processor is not None and playing:
+            depth_map, age = getattr(processor.classifier, "latest_depth", (None, None))
+        if depth_map is None:
+            state_box("No depth map yet", "Start the camera; the first map takes about a second.", compact=True)
+            return
+        note = " · too old, not used for proximity" if age > MAX_DEPTH_AGE else ""
+        st.image(colorize_depth(depth_map), channels="BGR", width="stretch",
+                 caption=f"Relative depth · brighter = closer · {age:.1f}s old{note}")
+
     with left:
         performance()
+        depth_preview()
     with right:
         live_status()
         # Controls sit outside the auto-refreshing fragment so clicks work normally.
@@ -711,6 +742,7 @@ with tab_test:
             if ss.preview_image_key != upload_key:
                 ss.preview_image_key = upload_key
                 ss.preview_image_result = ss.preview_image_frame = ss.preview_image_ms = ss.preview_image_error = None
+                ss.preview_image_depth = None
             if uploaded is not None:
                 frame = cv2.imdecode(np.frombuffer(uploaded.getvalue(), np.uint8), cv2.IMREAD_COLOR)
                 if frame is None:
@@ -719,18 +751,28 @@ with tab_test:
                     if st.button("Analyse image", type="primary", key="preview_analyse"):
                         started = time.perf_counter()
                         try:
-                            ss.preview_image_result = classifier.predict(frame)
+                            if hasattr(classifier, "predict_with_depth"):
+                                # Same as predict(), but keeps the depth map for display.
+                                ss.preview_image_depth = classifier.estimate_depth(frame)
+                                ss.preview_image_result = classifier.predict_with_depth(frame, ss.preview_image_depth)
+                            else:
+                                ss.preview_image_depth = None
+                                ss.preview_image_result = classifier.predict(frame)
                             ss.preview_image_frame = frame
                             ss.preview_image_ms = (time.perf_counter() - started) * 1000
                             ss.preview_image_error = None
                         except Exception as exc:
                             ss.preview_image_result = ss.preview_image_frame = ss.preview_image_ms = None
+                            ss.preview_image_depth = None
                             ss.preview_image_error = str(exc)
                     shown = frame
                     if ss.preview_image_result is not None and not is_demo and show_overlay:
                         shown = draw_result(frame, ss.preview_image_result)
                     st.image(shown, channels="BGR", use_container_width=True)
                     st.caption("Uploaded image · Demo scores are unrelated to the image" if is_demo else "Uploaded image")
+                    if ss.preview_image_depth is not None and show_depth:
+                        st.image(colorize_depth(ss.preview_image_depth), channels="BGR",
+                                 width="stretch", caption="Relative depth · brighter = closer")
             else:
                 state_box("No image selected", "Upload a JPG, PNG, or WebP to test this layout.")
     with assessment_col:

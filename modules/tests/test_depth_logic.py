@@ -81,3 +81,45 @@ def test_ui_adapter_preserves_demo_depth_and_score():
     assert failed_depth.score == .9
     assert "Depth unavailable" in failed_depth.depth_status
     assert "test depth failure" in failed_depth.depth_status
+
+
+def _two_people_with_knife(near_conf, far_conf):
+    """Person A on the left, person B on the right holding a knife."""
+    from modules.classifier import Detection
+    return [
+        Detection("person", far_conf, (0, 0, 100, 300)),
+        Detection("person", near_conf, (500, 0, 600, 300)),
+        Detection("knife", 0.8, (560, 100, 580, 140)),
+    ]
+
+
+def test_hazard_next_to_less_confident_child_is_critical():
+    """Every child is checked, not only the most confidently detected one."""
+    from modules.spatial import SpatialAnalyzer
+
+    score, reason = SpatialAnalyzer().assess(_two_people_with_knife(near_conf=0.6, far_conf=0.9), (480, 640))
+    assert score == 1.0
+    assert "CRITICAL" in reason
+
+
+def test_child_confidence_order_does_not_change_score():
+    from modules.spatial import SpatialAnalyzer
+
+    analyzer = SpatialAnalyzer()
+    low_near, _ = analyzer.assess(_two_people_with_knife(near_conf=0.6, far_conf=0.9), (480, 640))
+    high_near, _ = analyzer.assess(_two_people_with_knife(near_conf=0.9, far_conf=0.6), (480, 640))
+    assert low_near == high_near
+
+
+def test_extra_person_far_away_keeps_single_child_score():
+    from modules.classifier import Detection
+    from modules.spatial import SpatialAnalyzer
+
+    analyzer = SpatialAnalyzer()
+    child = Detection("person", 0.6, (100, 100, 220, 400), depth=0.9)
+    hazard = Detection("coin_battery", 0.85, (230, 150, 260, 180), depth=0.1)
+    # Far in pixels and at the child's depth, so it is further from the hazard.
+    far_person = Detection("person", 0.95, (560, 50, 630, 300), depth=0.9)
+    alone = analyzer.assess([child, hazard], (480, 640))
+    with_other = analyzer.assess([far_person, child, hazard], (480, 640))
+    assert with_other == alone
