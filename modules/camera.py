@@ -23,6 +23,7 @@ import numpy as np
 from streamlit_webrtc import VideoProcessorBase
 
 from modules.classifier import BaseClassifier, ClassificationResult
+from modules.spatial import CHILD_LABELS
 
 
 def draw_result(img, result: ClassificationResult, banner: bool = True):
@@ -31,10 +32,12 @@ def draw_result(img, result: ClassificationResult, banner: bool = True):
     img = img.copy()
     for d in result.detections:
         if d.bbox:
+            # Blue = person (child reference), yellow = hazard.
+            color = (255, 160, 0) if d.label in CHILD_LABELS else (0, 255, 255)
             x1, y1, x2, y2 = d.bbox
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             cv2.putText(img, f"{d.label} {d.confidence:.2f}", (x1, max(y1 - 6, 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     if not banner:                            # live view: the Assessment card already shows the level
         return img
     hex_c = result.level.color.lstrip("#")

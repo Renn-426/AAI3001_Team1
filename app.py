@@ -405,11 +405,17 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
         elif not result.detections:
             state_box("No objects detected", "An empty result does not establish that the scene is safe.", compact=True)
         else:
-            for item in result.detections:
+            # People first (child reference), then hazards from most to least dangerous.
+            def role(d):
+                key = d.label.lower().replace(" ", "_")
+                if key in CHILD_LABELS:
+                    return 0, "Child reference"
+                weight = DANGER_WEIGHTS.get(key)
+                return (1, f"Hazard · severity {weight:.2f}") if weight is not None else (2, "Other object")
+            for item in sorted(result.detections, key=lambda d: (role(d)[0], -d.confidence)):
                 st.html(
-                    f'<div class="object-row"><b>{escape(item.label)}</b><span>{item.confidence:.0%} confidence</span></div>',
-
-                )
+                    f'<div class="object-row"><b>{escape(item.label.replace("_", " "))}</b>'
+                    f'<span>{escape(role(item)[1])} · {item.confidence:.0%}</span></div>')
     with st.container(border=True, key=f"preview_{prefix}_proximity"):
         panel_title("Proximity assessment", "proximity")
         if is_demo:
@@ -419,7 +425,10 @@ def render_assessment(result=None, error=None, stale=False, idle=False, prefix="
                       "The danger level currently comes from the detected objects only.", compact=True)
         elif result is not None and not (error or stale or idle):
             st.write(result.reason or "No spatial explanation provided.")
-            st.caption(result.depth_status)
+            status = result.depth_status
+            if status.startswith("Depth unavailable"):
+                status = "Depth unavailable; image-plane distance only (details in Settings)."
+            st.caption(status)
             st.caption("Relative distances use the reference person's box height, not metres. A person detection does not identify age.")
         else:
             state_box("Proximity unavailable", "Waiting for current spatial analysis.", compact=True)
@@ -510,8 +519,17 @@ with navigation:
                            "`weights/` and restart to use the trained YOLOv8 detector.")
             else:
                 detector = getattr(classifier, "detector", classifier)
-                st.caption(f"Model: YOLOv8 · {os.path.basename(detector.weights_path)} · "
-                           f"{len(detector.names)} classes")
+                st.caption(f"{classifier.mode} · {os.path.basename(detector.weights_path)}")
+                if detector is classifier:
+                    st.caption("Put the notebook's `final_best.pt` in `weights/` and restart "
+                               "to detect all 14 hazard classes.")
+                if classifier.depth_error:
+                    st.caption("Depth: off, distances use the image plane only. The depth model "
+                               "needs `transformers` and internet on first run.")
+                    with st.expander("Depth error"):
+                        st.text(classifier.depth_error)
+                else:
+                    st.caption("Depth: relative depth (Depth Anything V2)")
             quality = st.radio("Camera quality", ["Smooth (480p)", "Sharp (720p)"], horizontal=True,
                                key="preview_quality",
                                help="480p lags less: every frame is sent to the server and back. "
@@ -587,8 +605,16 @@ with tab_live:
     initial_control = {"running": False, "device": ""}
     control_state = ss.get("preview_camera_footer", {}).get("control", initial_control)
     running = bool(control_state.get("running"))
+    model_pill = ("Demo model" if is_demo else
+                  "Trained model + spatial" if getattr(classifier, "detector", classifier) is not classifier
+                  else "Stock model + spatial")
     st.html(f'<div class="live-heading"><h1>Live Monitoring</h1><span class="{"pill live" if running else "pill"}">'
-            f'● {"Camera on" if running else "Camera stopped"}</span></div>')
+            f'● {"Camera on" if running else "Camera stopped"}</span><span class="pill">{model_pill}</span></div>')
+    if model_problem:
+        st.error(f"{model_problem} The app is running in demo mode with random scores.")
+    elif model_pill == "Stock model + spatial":
+        st.info("Only person, knife and scissors can be detected. Put Tze's `final_best.pt` in "
+                "`weights/` and restart the app to detect all 14 hazard classes.")
     left, right = st.columns([1.85, 1], gap="medium")
     with left:
         with st.container(border=True, key="preview_camera_card"):

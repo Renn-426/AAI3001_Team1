@@ -1,14 +1,25 @@
 # Child Safety Monitor
 
-Streamlit UI for live camera monitoring, image testing, and Telegram alerts.
-The UI connects the spatial team's stock-YOLO demo through `SpatialDemoClassifier`.
-It uses their detection conversion, original spatial calculation and depth helpers.
-The trained hazard detector remains a separate integration step.
+Streamlit UI for live camera monitoring, image/video testing, and Telegram alerts.
 
-The preview uses local `weights/yolov8s.pt`, a 960-pixel model input, hazard
-confidence 0.2 and person confidence 0.35, matching the team's test script.
-Supported stock-model spatial classes are person, scissors and knife. A person
-stands in for the child reference; this model does not identify age.
+Full pipeline (`HazardSpatialClassifier`), used when `weights/final_best.pt` exists:
+
+```text
+camera frame -> Tze's trained YOLOv8 (14 hazard classes)  -> hazards  -+
+             -> stock YOLOv8s (COCO "person")             -> person   -+-> SpatialAnalyzer
+             -> Depth Anything V2 (background thread)     -> depth    -+   -> danger level
+```
+
+Put the notebook's final model (Drive: Colab Notebooks > CVDL Model >
+`final_best.pt`) in `weights/` and restart. `weights/` is not in Git, so each
+person copies it once; `HAZARD_MODEL_PATH` can point elsewhere. Without it, the
+app uses the spatial team's stock-YOLO demo (`SpatialDemoClassifier`: person,
+knife and scissors only). The Live page shows which one is running, and a
+model that fails to load is shown as an error with demo mode.
+
+`weights/yolov8s.pt` (person model) downloads automatically on first run, and so
+does the depth model (needs `transformers` and internet once). A person stands
+in for the child reference; this model does not identify age.
 
 The UI owns one browser camera stream; it imports the demo's helper functions
 without running its camera-opening `main()`. Live depth runs in the background
@@ -52,7 +63,7 @@ The single `requirements.txt` includes both UI and training dependencies.
 | `modules/camera.py` | Browser camera frames, background inference, overlays, and video analysis | Liv & Ren |
 | `modules/notifier.py` | Telegram send queue (rate limits, photo reuse) and per-room cooldown | Liv & Ren |
 | `modules/subscriptions.py` | Homes, rooms, members (SQLite) and bot commands | Liv & Ren |
-| `modules/detector.py` | Detection interface and unfinished YOLO model skeleton | Tze |
+| `modules/detector.py` | `YOLODetector` for the trained hazard model; finds `final_best.pt` | Tze |
 | `modules/spatial.py` | Spatial interface and proximity/risk calculation | Ayumi & Nic |
 | `modules/classifier.py` | Shared result types and pipeline integration | Shared |
 | `Child_Safety_Hazard_Detection_YOLOv8.ipynb` | Augmentation, training, and evaluation | Tze |
@@ -83,23 +94,14 @@ the score to `SAFE`, `LOW`, `MEDIUM`, or `HIGH`. The UI continues to call
 `predict(frame_bgr) -> ClassificationResult`, containing `level`, `score`,
 `detections`, and `reason`.
 
-Once the trained detector is ready, replace the demo factory in `get_classifier()`
-in `modules/classifier.py` with:
-
-```python
-from modules.detector import YOLODetector
-from modules.spatial import SpatialAnalyzer
-
-return SafetyClassifier(
-    detector=YOLODetector("path/to/final_best.pt"),
-    spatial=SpatialAnalyzer(),
-)
-```
-
-The detector skeleton still raises `NotImplementedError` until implemented.
-`DummyClassifier` remains the labelled fallback if model loading fails. Use
-the **Test image** tab to check boxes, scores, and explanations. The adapter's
-depth/score regression check runs with `python -m pytest modules/tests/test_depth_logic.py -q`.
+`get_classifier()` in `modules/classifier.py` picks the pipeline:
+`HazardSpatialClassifier` (trained hazards + person + depth + spatial) when the
+trained weights are found, otherwise `SpatialDemoClassifier`. `DummyClassifier`
+remains the labelled fallback if model loading fails. The notebook's
+`medicine_syrup` class is renamed to `liquid_medicine` so it gets its spatial
+danger weight. Use the **Test Image** / **Test Video** tabs to check boxes,
+scores, and explanations. Tests:
+`python -m pytest modules/tests/test_depth_logic.py modules/tests/test_hazard_pipeline.py -q`.
 
 ## Telegram alerts
 
