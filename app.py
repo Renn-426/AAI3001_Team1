@@ -523,8 +523,19 @@ def load_camera_controls():
               render();
             } catch (_) { /* The browser's default camera remains available. */ }
           }
+          // streamlit-webrtc remembers the last camera in localStorage and forces it as
+          // deviceId.exact, overriding our constraint. Point that memory at our choice
+          // ('' = forget it, so the browser default is used).
+          function rememberDevice(id) {
+            const base = 'streamlit-webrtc:device-ids';
+            try {
+              const ls = window.localStorage, keys = [base];
+              for (let i = 0; i < ls.length; i++) { const k = ls.key(i); if (k && k.startsWith(base + ':')) keys.push(k); }
+              keys.forEach(k => id ? ls.setItem(k, JSON.stringify({ video: id })) : ls.removeItem(k));
+            } catch (_) { /* storage blocked: the deviceId constraint still applies on a fresh mount */ }
+          }
           button.onclick = () => { control = { ...control, running: !control.running }; render(); setStateValue('control', control); };
-          select.onchange = () => { control = { ...control, device: select.value }; setStateValue('control', control); };
+          select.onchange = () => { control = { ...control, device: select.value }; rememberDevice(control.device); setStateValue('control', control); };
           navigator.mediaDevices?.addEventListener('devicechange', devices);
           render(); devices();
           return () => { mounted = false; navigator.mediaDevices?.removeEventListener('devicechange', devices); };
@@ -670,8 +681,11 @@ with tab_live:
                 if control["device"]:
                     video_constraint["deviceId"] = {"exact": control["device"]}
                 local_preview = urlsplit(st.context.url).hostname in {"localhost", "127.0.0.1", "::1"}
+                # streamlit-webrtc reads its remembered camera only when it mounts, so a
+                # per-device key forces a remount after the input changes (only possible while stopped).
+                cam_key = "preview-camera" + (f"-{control['device'][:16]}" if control["device"] else "")
                 ctx = webrtc_streamer(
-                    key="preview-camera", mode=WebRtcMode.SENDRECV,
+                    key=cam_key, mode=WebRtcMode.SENDRECV,
                     rtc_configuration=RTCConfiguration({"iceServers": [] if local_preview else [{"urls": ["stun:stun.l.google.com:19302"]}]}),
                     video_processor_factory=make_processor,
                     media_stream_constraints={"video": video_constraint, "audio": False},
