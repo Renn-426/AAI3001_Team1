@@ -9,7 +9,7 @@ The prototype addresses camera monitoring of potentially hazardous household obj
 This project is a prototype monitoring assistant. It watches a camera feed, image or video and:
 
 1. **Detects household hazards** with a custom-trained YOLOv8 model (seven hazard groups).
-2. **Detects people** with a stock COCO person detector, used as the reference point for proximity. For demo purposes, any detected person stands in for the child.
+2. **Detects people** with a stock COCO-pretrained YOLOv8n person detector, used as the reference point for proximity. For demo purposes, any detected person stands in for the child.
 3. **Estimates relative depth** with Depth Anything V2 Small to compare frame-relative depth at the person and hazard boxes. These values are not physical distances.
 4. **Scores spatial risk** from the image-plane gap, the depth gap and the hazard type, then displays a `SAFE`, `LOW`, `MEDIUM` or `HIGH` assessment. The spatial explanation separately uses geometric zones named SAFE, CAUTION, WARNING and CRITICAL.
 5. **Supports caregiver alerts** through Telegram when the configured level and duration conditions are met, with a cooldown to limit repeated messages.
@@ -58,7 +58,7 @@ The hazard dataset combines **public online images** and **photographs the team 
 
 #### 1. Public datasets (selected sources)
 
-The table below lists some of the public datasets used during data collection. It is not a complete inventory of every source contributing to the final dataset.
+The table below lists the public sources that the team recorded. It is not the full list: some images also came from other public datasets (mainly on Roboflow Universe and Kaggle) whose links were not saved during collection, and from online marketplace listings (e.g. Carousell). These unrecorded sources are acknowledged as a group rather than individually.
 
 | Source | Images/categories sourced | Link |
 |:---|:---|:---|
@@ -67,12 +67,18 @@ The table below lists some of the public datasets used during data collection. I
 | **LVIS** | Knives, scissors, bottles, bottle caps | [platform.ultralytics.com/ultralytics/datasets/lvis](https://platform.ultralytics.com/ultralytics/datasets/lvis) |
 | **Baby-Danger** (Roboflow Universe) | Unsafe objects for children | [https://universe.roboflow.com/fyp-ytggz/baby-danger](https://universe.roboflow.com/fyp-ytggz/baby-danger) |
 | **Harmful Objects** (Roboflow Universe) | Harmful objects that pose risk | [https://universe.roboflow.com/harmfull-objects/harmful-objects-wmmdi](https://universe.roboflow.com/harmfull-objects/harmful-objects-wmmdi) |
+| **Medicine Tablet Pack Image Dataset** (Kaggle) | Pill packets / blister packs | [kaggle.com/datasets/nitesh31mishra/medicine-tablet-pack-image-dataset](https://www.kaggle.com/datasets/nitesh31mishra/medicine-tablet-pack-image-dataset) |
+| **Drug Detection Dataset (7 classes)** (Kaggle) | Medicines | [kaggle.com/datasets/mfajarmaulana/drug-detection-dataset-7-classes](https://www.kaggle.com/datasets/mfajarmaulana/drug-detection-dataset-7-classes) |
+| **Marble** (Roboflow Universe) | Marbles | [universe.roboflow.com/1-_/marble-vzkli](https://universe.roboflow.com/1-_/marble-vzkli) |
+| **Pen Cap** (Roboflow Universe) | Pen caps | [universe.roboflow.com/serahs-workspace/pen-cap](https://universe.roboflow.com/serahs-workspace/pen-cap) |
+| **Bottle Cap** (Roboflow Universe) | Bottle caps | [universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp](https://universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp) |
+| **Online marketplace listings** (e.g. Carousell) | Product photos of household hazard items | Collected for non-commercial academic use; individual listings not recorded |
 
 Each source keeps its own licence and terms of use. Check the linked dataset page before redistributing any images. The full image dataset is stored separately. This repository includes split assignments and selected illustrative images, such as the examples below.
 
 #### 2. Self-collected photographs
 
-Team members photographed the hazard objects in real homes: on beds, blankets, clutter, floors and tables, under ordinary indoor lighting. These photos add cluttered backgrounds and everyday phone-camera viewpoints. Their coverage of the intended monitoring conditions still needs evaluation.
+The team contributed about **450 self-collected photos**, taken by all five members, covering batteries, bottle caps, coins, marbles, pen caps, pill bottles, pill packets, scissors, small toy parts and medicine syrup. Team members photographed the hazard objects in real homes: on beds, blankets, clutter, floors and tables, under ordinary indoor lighting. These photos add cluttered backgrounds and everyday phone-camera viewpoints. Their coverage of the intended monitoring conditions still needs evaluation.
 
 <table align="center">
   <tr>
@@ -227,3 +233,35 @@ See the [deployment guide](docs/DEPLOYMENT.md) for prerequisites, secrets, serve
 - Stop the paid backup VM after use; its disk can continue to incur storage charges.
 - Use the latest tunnel URL after restarting the backup deployment.
 - Run only one Telegram poller per bot token to avoid command conflicts between deployments.
+
+## References
+
+Buslaev, A., Iglovikov, V. I., Khvedchenya, E., Parinov, A., Druzhinin, M., & Kalinin, A. A. (2020). Albumentations: Fast and flexible image augmentations. *Information, 11*(2), 125. https://doi.org/10.3390/info11020125
+
+fairuzkhan002. (n.d.). *ChildSUn* [Data set]. Kaggle. https://www.kaggle.com/datasets/fairuzkhan002/datasetvgg19
+
+fyp-ytggz. (n.d.). *Baby-Danger* [Data set]. Roboflow Universe. https://universe.roboflow.com/fyp-ytggz/baby-danger
+
+Gupta, A., Dollár, P., & Girshick, R. (2019). LVIS: A dataset for large vocabulary instance segmentation. In *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition* (pp. 5356–5364). https://doi.org/10.1109/CVPR.2019.00550
+
+Harmfull Objects. (n.d.). *Harmful objects* [Data set]. Roboflow Universe. https://universe.roboflow.com/harmfull-objects/harmful-objects-wmmdi
+
+Jocher, G., Chaurasia, A., & Qiu, J. (2023). *Ultralytics YOLOv8* (Version 8.4.198) [Computer software]. https://github.com/ultralytics/ultralytics
+
+Kuznetsova, A., Rom, H., Alldrin, N., Uijlings, J., Krasin, I., Pont-Tuset, J., Kamali, S., Popov, S., Malloci, M., Kolesnikov, A., Duerig, T., & Ferrari, V. (2020). The Open Images Dataset V4. *International Journal of Computer Vision, 128*(7), 1956–1981. https://doi.org/10.1007/s11263-020-01316-z
+
+Lin, T.-Y., Maire, M., Belongie, S., Hays, J., Perona, P., Ramanan, D., Dollár, P., & Zitnick, C. L. (2014). Microsoft COCO: Common objects in context. In *Computer Vision – ECCV 2014* (pp. 740–755). Springer. https://doi.org/10.1007/978-3-319-10602-1_48
+
+*Marble* [Data set]. (n.d.). Roboflow Universe. https://universe.roboflow.com/1-_/marble-vzkli
+
+mfajarmaulana. (n.d.). *Drug detection dataset (7 classes)* [Data set]. Kaggle. https://www.kaggle.com/datasets/mfajarmaulana/drug-detection-dataset-7-classes
+
+nitesh31mishra. (n.d.). *Medicine tablet pack image dataset* [Data set]. Kaggle. https://www.kaggle.com/datasets/nitesh31mishra/medicine-tablet-pack-image-dataset
+
+serahs-workspace. (n.d.). *Pen cap* [Data set]. Roboflow Universe. https://universe.roboflow.com/serahs-workspace/pen-cap
+
+work2-rjplo. (n.d.). *Bottle cap* [Data set]. Roboflow Universe. https://universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp
+
+Yang, L., Kang, B., Huang, Z., Zhao, Z., Xu, X., Feng, J., & Zhao, H. (2024). *Depth Anything V2*. arXiv. https://doi.org/10.48550/arXiv.2406.09414
+
+*Note.* Additional images came from other public datasets whose links were not recorded, online marketplace listings (e.g. Carousell) and photos taken by the team. All were used for non-commercial academic purposes.

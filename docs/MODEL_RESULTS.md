@@ -286,7 +286,7 @@ The baseline source session was stopped after completing baseline and Exp1; its 
 
 The repository contains the result tables, figures, training histories and split record needed to follow the documented findings. Full datasets and model checkpoints are stored separately. Obtain the selected checkpoint from the team and place it at weights/final_best.pt; source-session records and checkpoint checksums remain in the [artifact manifest](../configs/model_training/artifact_manifest.json).
 
-The README lists [selected public-image sources](../README.md#1-public-datasets-selected-sources). That list is incomplete; a full source inventory and any missing earlier-project citations still need to be recovered before final submission.
+The README lists the [main public-image sources](../README.md#1-public-datasets-selected-sources) and a full [reference list](../README.md#references). Remaining images came from other public datasets whose links were not saved during collection, online marketplace listings (e.g. Carousell) and about 450 team-taken photos. These unrecorded sources are acknowledged as a group rather than individually.
 
 To verify a downloaded model on Windows:
 
@@ -301,4 +301,5 @@ Compare the result with the `final_best.pt` entry in the manifest. Existing `wei
 - [Ultralytics YOLOv8](https://docs.ultralytics.com/models/yolov8/): model family.
 - [Ultralytics validation](https://docs.ultralytics.com/modes/val/): mAP and evaluator documentation.
 - [Albumentations](https://albumentations.ai/docs/): image and bounding-box transformations. Current documentation may describe newer releases; recorded versions above govern this experiment.
-- Internal evidence: notebook Sections 6–10 and the linked CSVs/training histories. Selected public sources appear in the README. Complete source provenance and missing earlier-project bibliographic details remain outstanding.
+- Internal evidence: notebook Sections 6–10 and the linked CSVs/training histories.
+- Dataset sources and full APA references: see the [README references](../README.md#references).
