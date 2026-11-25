@@ -37,6 +37,7 @@ This project is a prototype monitoring assistant. It watches a camera feed, imag
 | [Spatial analysis and integration](docs/SPATIAL_ANALYSIS.md) | Relative box distance, depth sampling, risk formula, temporal handling, tests and seven-class risk mapping |
 | [Cloud deployment guide](docs/DEPLOYMENT.md) | Streamlit Community Cloud, Google Cloud setup, camera relay, costs and operational checks |
 | [Executed notebook](Child_Safety_Hazard_Detection_YOLOv8.ipynb) | Full preparation/training/evaluation code and recorded outputs |
+| [Deliverables](Deliverables/) | Final poster, presentation slides, and group contributions and AI reflection |
 
 > **Reading the report on GitHub:** the executed notebook is approximately 38 MB and may be too large for GitHub's notebook preview. The [model guide](docs/MODEL_RESULTS.md) is written to stand alone, with readable result tables and figures. Download the notebook and open it in Jupyter or VS Code if you need the full executed cells.
 
