@@ -40,6 +40,36 @@ This project is a prototype monitoring assistant. It watches a camera feed, imag
 
 > **Reading the report on GitHub:** the executed notebook is approximately 38 MB and may be too large for GitHub's notebook preview. The [model guide](docs/MODEL_RESULTS.md) is written to stand alone, with readable result tables and figures. Download the notebook and open it in Jupyter or VS Code if you need the full executed cells.
 
+## Repository structure
+
+```text
+AAI3001_Team1/
+├── app.py                         # Streamlit app: live monitoring, test image/video, alerts
+├── Child_Safety_Hazard_Detection_YOLOv8.ipynb   # Dataset prep, training and evaluation
+├── modules/
+│   ├── detector.py                # Loads the trained YOLOv8 hazard detector
+│   ├── classifier.py              # Connects detector → spatial analysis → UI
+│   ├── spatial.py                 # Spatial risk analysis (distance → danger level)
+│   ├── spatial_pipeline.py        # Shared YOLO + depth + spatial glue for app and tests
+│   ├── depth_estimator.py         # Depth Anything V2 relative depth
+│   ├── camera.py                  # Live camera via streamlit-webrtc
+│   ├── rtc_config.py              # TURN relay settings for cloud camera connections
+│   ├── notifier.py                # Telegram alert sending
+│   ├── subscriptions.py           # Telegram homes, rooms and subscribers
+│   ├── wholepipeline.py           # Earlier combined video pipeline (person + hazard + spatial)
+│   └── tests/                     # Unit and live tests (spatial, depth, pipeline, TURN)
+├── weights/final_best.pt          # Selected detector (YOLOv8s, 640 px)
+├── configs/model_training/        # Selected detector settings and artifact manifest
+├── results/                       # Validation, test and training-history CSVs, split membership
+├── figures/                       # Dataset examples and evaluation figures
+├── docs/                          # UI guide, model results, spatial analysis, deployment
+├── deploy/gcp/                    # Google Cloud VM setup scripts
+├── Deliverables/                  # Poster, slides, contributions and AI reflection
+├── .streamlit/config.toml         # Streamlit settings
+├── requirements.txt               # Python dependencies
+└── packages.txt                   # Linux packages for Streamlit Community Cloud
+```
+
 ## Quick start
 
 ```powershell
