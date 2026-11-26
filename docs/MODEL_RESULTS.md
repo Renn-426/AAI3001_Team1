@@ -284,7 +284,7 @@ The baseline source session was stopped after completing baseline and Exp1; its 
 
 ## Artifact locations and verification
 
-The repository contains the result tables, figures, training histories and split record needed to follow the documented findings. Full datasets and model checkpoints are stored separately. Obtain the selected checkpoint from the team and place it at weights/final_best.pt; source-session records and checkpoint checksums remain in the [artifact manifest](../configs/model_training/artifact_manifest.json).
+The repository contains the result tables, figures, training histories and split record needed to follow the documented findings. Full datasets and the other experiment checkpoints are stored separately. The selected checkpoint is included at `weights/final_best.pt`; source-session records and checkpoint checksums remain in the [artifact manifest](../configs/model_training/artifact_manifest.json).
 
 The README lists the [main public-image sources](../README.md#1-public-datasets-selected-sources) and a full [reference list](../README.md#references). Remaining images came from other public datasets whose links were not saved during collection, online marketplace listings (e.g. Carousell) and about 450 team-taken photos. These unrecorded sources are acknowledged as a group rather than individually.
 

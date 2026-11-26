@@ -67,27 +67,18 @@ Normalising by person height gives a relative unit. For example, a 60-pixel gap 
 
 ### Worked example: gap ÷ person height
 
-The app does not measure metres. It measures the gap between the person's box and the hazard's box, then divides it by the person's box height. Dividing by the person's height makes the result independent of how far the camera is, so no camera calibration is needed.
+The app does not measure metres. It measures the gap between the person's box and the hazard's box, then divides it by the person's box height. A person nearer the camera looks bigger, and so does every gap around them; dividing by their height cancels this out, so no camera calibration is needed. (Posture, camera angle and cut-off boxes still affect it.)
+
+<p align="center"><img src="../figures/spatial/gap_over_height.png" alt="Two camera frames of the same scene. Far: person 300 px tall, gap 60 px. Near: person 600 px tall, gap 120 px. Coloured zone rings around the person grow with the person, so both give 0.20 person-heights, CRITICAL" width="820"></p>
 
 **Example.** The person's box is 300 px tall. A coin battery's box is 60 px from the edge of the person's box.
 
-- Distance = 60 ÷ 300 = **0.20 person-heights**
-- 0.20 is below 0.5, so the geometric zone is **CRITICAL**
-- With no depth gap, proximity = 1 − 0.20 / 3.0 ≈ 0.93, and score = 0.93 × 1.0 (coin battery weight) ≈ **0.93**
+1. Distance = 60 ÷ 300 = **0.20 person-heights**
+2. 0.20 is below 0.5, so the geometric zone is **CRITICAL**
+3. Proximity = 1 − 0.20 ÷ 3.0 ≈ **0.93** (3.0 person-heights or more counts as too far to matter)
+4. Score = proximity × hazard weight = 0.93 × 1.0 (coin battery) ≈ **0.93**, which is the **HIGH** alert level
 
-If the same person stood twice as close to the camera (box 600 px tall) with the object 120 px away, the answer is still 0.20, so the zone does not change.
-
-**Visual example** (side view, not to scale):
-
-    +-----------+
-    |           |
-    |  person   |                +------+
-    |  box      |<-- 60 px gap ->| coin |
-    |  (300 px  |                | batt |
-    |   tall)   |                +------+
-    +-----------+
-
-    distance = 60 / 300 = 0.20 person-heights  ->  CRITICAL
+If the same person stood twice as close to the camera (box 600 px tall) with the object 120 px away, the answer is still 120 ÷ 600 = 0.20, so the zone does not change.
 
 If the two boxes overlap, the gap is 0. Depth, when available, is added as a separate distance term (see the next section).
 
@@ -105,6 +96,30 @@ effective_distance = sqrt(planar_distance^2 + (3.0 * depth_gap)^2)
 ```
 
 If the boxes overlap and the hazard is nearer the camera than the person reference, the implementation subtracts up to **0.30** from the depth gap before combining it. This heuristic prevents some hand/lap-held foreground objects from being treated as far away solely because the person's body has a different depth. It is an assumed tolerance, not measured arm reach.
+
+### Worked example: adding depth
+
+Two scenes can look identical on camera but be very different in the room. Depth tells them apart.
+
+<p align="center"><img src="../figures/spatial/depth_gap.png" alt="Camera view shows the same 0.20 gap for two scenes. Seen from above, hazard A is beside the person and hazard B is far behind. A scores 0.93 (CRITICAL zone, HIGH alert); B scores 0.20 (CAUTION zone, SAFE alert)" width="820"></p>
+
+All four cases use a coin battery (weight 1.0). Depth values are 0–1 within the frame, not metres.
+
+| Case | 2D distance | Depth gap | Effective distance | Score | Zone | Alert level |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **A.** Beside the person | 0.20 | 0.02 | √(0.20² + (3 × 0.02)²) = 0.21 | 0.93 | CRITICAL | HIGH |
+| **B.** Far behind the person | 0.20 | 0.80 | √(0.20² + (3 × 0.80)²) = 2.41 | 0.20 | CAUTION | SAFE |
+| **C.** No depth available (2D only) | 0.20 | — | 0.20 | 0.93 | CRITICAL | HIGH |
+| **D.** Held in the hand (boxes overlap, hazard nearer the camera) | 0 | 0.25 → 0 after the 0.30 allowance | 0 | 1.00 | CRITICAL | HIGH |
+
+How to read it:
+
+- **A vs B:** same 2D gap, but B is far behind the person, so its effective distance grows from 0.21 to 2.41 and the score drops from 0.93 to 0.20.
+- **B shows that zone and alert level are different things.** The zone (CAUTION) comes from distance only. The alert level (SAFE) comes from the score, which also includes the hazard weight. Telegram alerts use the alert level.
+- **C** is what happens when depth is missing or older than 1.5 s: the app falls back to the 2D distance.
+- **D:** an object held in front of the body is nearer the camera than the person's middle, so its depth differs a little. The 0.30 allowance stops this from being treated as "far away".
+
+The ×3 depth weight, the 0.30 allowance and the zone cut-offs are hand-set values, not measured from real scenes.
 
 Without usable depth, effective distance equals planar distance. For fixed boxes the depth term can only maintain or increase separation and thus maintain or reduce the raw score. Errors in depth can therefore suppress an otherwise close 2D pair. Conversely, planar fallback can overstate proximity when the objects lie at different physical depths. Neither path is established as a guarantee against under-warning in real scenes.
 

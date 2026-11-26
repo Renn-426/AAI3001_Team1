@@ -2,7 +2,7 @@
 
 A team computer-vision prototype combining hazard detection, a person reference, relative-depth/spatial analysis, a Streamlit interface and Telegram caregiver alerts.
 
-**Demonstration video:** 
+**Demonstration video:** *(link coming soon)*
 
 ## Project overview
 
@@ -64,7 +64,7 @@ AAI3001_Team1/
 ├── weights/final_best.pt          # Selected detector (YOLOv8s, 640 px)
 ├── configs/model_training/        # Selected detector settings and artifact manifest
 ├── results/                       # Validation, test and training-history CSVs, split membership
-├── figures/                       # Dataset examples and evaluation figures
+├── figures/                       # Dataset examples, evaluation figures and spatial diagrams
 ├── docs/                          # UI guide, model results, spatial analysis, deployment
 ├── deploy/gcp/                    # Google Cloud VM setup scripts
 ├── Deliverables/                  # Poster, slides, contributions and AI reflection
@@ -81,7 +81,7 @@ py -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-Obtain the selected checkpoint separately and place it at `weights/final_best.pt`, or configure `HAZARD_MODEL_PATH`. Weights are ignored by Git. Without the trained checkpoint, the app uses a stock-model demonstration. If pipeline construction fails, the app displays an error and uses a random-score fallback. Neither is equivalent to the selected seven-group detector. See the [UI guide](docs/UI_GUIDE.md).
+The selected checkpoint is included at `weights/final_best.pt`; set `HAZARD_MODEL_PATH` to use a different file. Without the trained checkpoint, the app uses a stock-model demonstration. If pipeline construction fails, the app displays an error and uses a random-score fallback. Neither is equivalent to the selected seven-group detector. See the [UI guide](docs/UI_GUIDE.md).
 
 ## Dataset
 
@@ -106,13 +106,14 @@ The table below lists the public sources that the team recorded. It is not the f
 | **Pen Cap** (Roboflow Universe) | Pen caps | [universe.roboflow.com/serahs-workspace/pen-cap](https://universe.roboflow.com/serahs-workspace/pen-cap) |
 | **Bottle Cap** (Roboflow Universe) | Bottle caps | [universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp](https://universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp) |
 | **Online marketplace listings** (e.g. Carousell) | Product photos of household hazard items | Collected for non-commercial academic use; individual listings not recorded |
-| **Team-collected Dataset** | Photos of household hazard items |https://drive.google.com/drive/folders/1m2RYKnfbyc7Sx-TU7JLQYjfhXEqK03U_?usp=sharing |
 
 Each source keeps its own licence and terms of use. Check the linked dataset page before redistributing any images. The full image dataset is stored separately. This repository includes split assignments and selected illustrative images, such as the examples below.
 
 #### 2. Self-collected photographs
 
 The team contributed about **450 self-collected photos**, taken by all five members, covering batteries, bottle caps, coins, marbles, pen caps, pill bottles, pill packets, scissors, small toy parts and medicine syrup. Team members photographed the hazard objects in real homes: on beds, blankets, clutter, floors and tables, under ordinary indoor lighting. These photos add cluttered backgrounds and everyday phone-camera viewpoints. Their coverage of the intended monitoring conditions still needs evaluation.
+
+**Download:** [Team-collected images and annotations (Google Drive)](https://drive.google.com/drive/folders/1m2RYKnfbyc7Sx-TU7JLQYjfhXEqK03U_?usp=sharing). View-only; shared for academic assessment.
 
 <table align="center">
   <tr>
@@ -190,7 +191,7 @@ Experiment 6 obtains **96.63% crop-validation accuracy**, but adding it to the d
 - `configs/model_training/selected_detector.json`: recommended settings and seven-class mapping. This is a record, not an automatically loaded app configuration.
 - `configs/model_training/artifact_manifest.json`: source runs, checkpoint hashes, notebook hash and copied-record checksums.
 
-Large datasets, generated image folders and model checkpoints remain outside normal Git tracking. Their locations and access requirements are documented in the [model guide](docs/MODEL_RESULTS.md#artifact-locations-and-verification).
+The selected checkpoint (`weights/final_best.pt`) is included; large datasets, generated image folders and the other experiment checkpoints remain outside Git. Their locations and access requirements are documented in the [model guide](docs/MODEL_RESULTS.md#artifact-locations-and-verification).
 
 ## System scope and integration status
 
@@ -221,11 +222,15 @@ The project prioritises recovering hazards while monitoring false detections. Th
 - **Small objects remain difficult.** Recall is about `0.65` for objects with a shorter side of 16–32 model-input pixels, compared with `0.92` at 64+ pixels. These measurements do not establish a physical operating distance.
 - **Some classes are weaker.** Stress recall is approximately `0.70` for pen, `0.75` for sharp objects and `0.77` for battery.
 - **Camera conditions can differ from the test data.** Synthetic blur, noise and lighting changes do not replace independent testing in representative homes. A frame with no detections does not establish that the scene is safe.
-- **Lighting and grain raise false alarms.** On 150 controlled images, recall stayed within about 3 pp of the control (0.835), but false alarms per image rose from 0.113 to 0.193 for brighter images and 0.187 for grainy ones. Darker (0.107) and blurred (0.127) images stayed close to the control.
+- **Brighter lighting and grain raise false alarms.** On 150 controlled images, recall stayed within about 3 pp of the control (0.835), but false alarms per image rose from 0.113 to 0.193 for brighter images and 0.187 for grainy ones. Darker (0.107) and blurred (0.127) images stayed close to the control.
 
 See [model failures and limitations](docs/MODEL_RESULTS.md#failure-analysis-and-practical-consequences) for class, size and confidence analyses.
 
 ### Spatial analysis and relative depth
+
+**How distance is measured.** The app takes the gap between the person's box and the hazard's box and divides it by the person's box height, giving a distance in "person-heights". A 60 px gap next to a 300 px-tall person is 0.20, which falls in the CRITICAL zone. Relative depth is then added as an extra distance term, so a hazard that only *looks* close on camera but is far behind the person scores lower. See the [worked example with pictures](docs/SPATIAL_ANALYSIS.md#worked-example-gap--person-height).
+
+<p align="center"><img src="figures/spatial/gap_over_height.png" alt="Two camera frames of the same scene. Far: person 300 px tall, gap 60 px. Near: person 600 px tall, gap 120 px. Coloured zone rings around the person grow with the person, so both give 0.20 person-heights, CRITICAL" width="820"></p>
 
 - **Proximity is relative, not measured in metres.** The image-plane calculation divides box-edge separation by the person's box height. Posture, camera angle and truncated detections affect it; overlapping boxes do not establish contact.
 - **Depth is relative, not metric.** The pipeline normalises the depth map within each frame and samples the central part of each detection box. The person's sampled region does not necessarily represent a reaching hand. Reflective surfaces, transparent objects and very small objects require additional evaluation.
@@ -245,6 +250,15 @@ These are the ways we could scale the project in future.
 - **More cameras and rooms:** each camera feed runs the same pipeline, and Telegram alerts support multiple rooms and caregivers.
 - **Future:** export a smaller model for home edge devices.
 - **Other uses:** eldercare (medicine, sharp objects), childcare centres and home safety audits.
+
+## Future work
+
+- **Data:** collect real footage from the monitoring camera under different lighting (dim rooms, strong sunlight, night/IR), add labelled empty rooms to measure false alarms, and add more small objects, pens and sharp objects, which are the weakest cases.
+- **Model:** repeat the key experiments with several random seeds before trusting small differences, and export a smaller model for home edge devices.
+- **Spatial:** validate the hand-set risk weights (especially the pen/pen-cap group), and test calibrated distance in metres with a fixed, measured camera setup.
+- **Application:** measure camera-to-notification delay on the deployed hardware, and test alert usefulness and alert fatigue with real caregivers.
+
+The detailed lists are in the [model guide](docs/MODEL_RESULTS.md#future-work-and-application-handoff) and the [spatial guide](docs/SPATIAL_ANALYSIS.md#limitations-and-next-validation-steps).
 
 ## Cloud Deployment
 
@@ -285,11 +299,15 @@ See the [deployment guide](docs/DEPLOYMENT.md) for prerequisites, secrets, serve
 
 **Why not use the crop classifier?** It reached 96.63% crop accuracy but made the full pipeline worse: stress recall fell from 82.7% to 59.5% and misses rose. A part that scores well alone still has to be tested end to end.
 
-**Why accept more false alarms?** A missed hazard such as a coin battery can mean choking, while a false alarm costs a glance at the phone. The 0.30 threshold gives the fewest false boxes among thresholds that keep overall recall at or above 0.85 on validation. At 0.40, recall falls to 0.829. The 0.85 target is our own criterion, not a safety standard, and alert fatigue in real homes is not measured. The app limits repeat alerts with a 1.5 s minimum duration and a 60 s cooldown.
+**Why accept more false alarms?** A missed hazard such as a coin battery can mean choking, while a false alarm costs a glance at the phone. The 0.30 threshold gives the fewest false boxes among thresholds that keep overall recall at or above 0.85 on validation. At 0.40, recall falls to 0.829. The 0.85 target is our own criterion, not a safety standard, and alert fatigue in real homes is not measured. The app limits repeat alerts with a 1.5 s minimum duration and a 60 s cooldown by default (both adjustable in the app).
 
 **Why a COCO person detector, not a child detector?** For the demo, any detected person stands in for the child. It does not identify age. The rest of the pipeline only needs a person box, so it can be swapped later.
 
+**What does "gap ÷ person height" mean?** It is the space between the person's box and the hazard's box, divided by the person's box height. A 60 px gap beside a 300 px-tall person gives 0.20 "person-heights". Because a person nearer the camera looks bigger and so does every gap, dividing by their height gives the same answer whether they are near or far (120 ÷ 600 is also 0.20). See the [worked example with pictures](docs/SPATIAL_ANALYSIS.md#worked-example-gap--person-height).
+
 **Why relative distance, not metres?** Metres need a calibrated camera. Dividing by the person's box height needs no calibration, but it is only a heuristic.
+
+**Where can it be used, and what if the lighting is different?** It is designed for indoor spaces such as homes, childcare centres and eldercare rooms, with a fixed camera at close range. In our controlled test on 150 images, darker, brighter, grainy and blurred images changed recall by less than 3 pp, but brighter and grainy images almost doubled false alarms (0.11 → 0.19 per image). Very low light and night/IR cameras were not tested. This is a known limitation; the next step is collecting real footage in different lighting and retraining (see [Future work](#future-work)).
 
 **Are the risk weights validated?** No. They are set by hand from severity, and so are the zone cut-offs and depth weight. Known issue: pen caps share the low pen weight (0.30).
 
