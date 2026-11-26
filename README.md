@@ -2,6 +2,8 @@
 
 A team computer-vision prototype combining hazard detection, a person reference, relative-depth/spatial analysis, a Streamlit interface and Telegram caregiver alerts.
 
+**Demonstration video:** 
+
 ## Project overview
 
 The prototype addresses camera monitoring of potentially hazardous household objects, including batteries, small items, medicines and sharp tools. It aims to support caregiver awareness while retaining the detection and spatial limitations described below.
@@ -104,6 +106,7 @@ The table below lists the public sources that the team recorded. It is not the f
 | **Pen Cap** (Roboflow Universe) | Pen caps | [universe.roboflow.com/serahs-workspace/pen-cap](https://universe.roboflow.com/serahs-workspace/pen-cap) |
 | **Bottle Cap** (Roboflow Universe) | Bottle caps | [universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp](https://universe.roboflow.com/work2-rjplo/bottle-cap-oiuwp) |
 | **Online marketplace listings** (e.g. Carousell) | Product photos of household hazard items | Collected for non-commercial academic use; individual listings not recorded |
+| **Team-collected Dataset** | Photos of household hazard items |https://drive.google.com/drive/folders/1m2RYKnfbyc7Sx-TU7JLQYjfhXEqK03U_?usp=sharing |
 
 Each source keeps its own licence and terms of use. Check the linked dataset page before redistributing any images. The full image dataset is stored separately. This repository includes split assignments and selected illustrative images, such as the examples below.
 
@@ -218,6 +221,7 @@ The project prioritises recovering hazards while monitoring false detections. Th
 - **Small objects remain difficult.** Recall is about `0.65` for objects with a shorter side of 16–32 model-input pixels, compared with `0.92` at 64+ pixels. These measurements do not establish a physical operating distance.
 - **Some classes are weaker.** Stress recall is approximately `0.70` for pen, `0.75` for sharp objects and `0.77` for battery.
 - **Camera conditions can differ from the test data.** Synthetic blur, noise and lighting changes do not replace independent testing in representative homes. A frame with no detections does not establish that the scene is safe.
+- **Lighting and grain raise false alarms.** On 150 controlled images, recall stayed within about 3 pp of the control (0.835), but false alarms per image rose from 0.113 to 0.193 for brighter images and 0.187 for grainy ones. Darker (0.107) and blurred (0.127) images stayed close to the control.
 
 See [model failures and limitations](docs/MODEL_RESULTS.md#failure-analysis-and-practical-consequences) for class, size and confidence analyses.
 
@@ -231,6 +235,16 @@ See [model failures and limitations](docs/MODEL_RESULTS.md#failure-analysis-and-
 - **A detected person is only a reference.** The model does not identify age. SAFE is a computed application state, not a safety certification.
 
 See [spatial assumptions and remaining checks](docs/SPATIAL_ANALYSIS.md#seven-class-integration-and-remaining-checks) for formulas, timing behaviour and implementation details. Detector evaluation alone does not validate the complete camera/depth/alert pipeline.
+
+## Scalability
+
+These are design properties, not tested results.
+
+- **New hazards:** add labels, update the class mapping, and retrain. The rest of the pipeline stays the same.
+- **Modular:** the hazard, person and depth models can each be swapped or upgraded independently.
+- **More cameras and rooms:** each camera feed runs the same pipeline, and Telegram alerts support multiple rooms and caregivers.
+- **Future:** export a smaller model for home edge devices.
+- **Other uses:** eldercare (medicine, sharp objects), childcare centres and home safety audits.
 
 ## Cloud Deployment
 
@@ -264,6 +278,24 @@ See the [deployment guide](docs/DEPLOYMENT.md) for prerequisites, secrets, serve
 - Stop the paid backup VM after use; its disk can continue to incur storage charges.
 - Use the latest tunnel URL after restarting the backup deployment.
 - Run only one Telegram poller per bot token to avoid command conflicts between deployments.
+
+## FAQ
+
+**Why YOLOv8s at 640 px?** It had the best clean-validation mAP@50–95 and ranked first on every set (clean-test mAP 65.5 vs 60.5 for the baseline, +4.97 pp). The 960 px and P2 variants did not beat it.
+
+**Why not use the crop classifier?** It reached 96.63% crop accuracy but made the full pipeline worse: stress recall fell from 82.7% to 59.5% and misses rose. A part that scores well alone still has to be tested end to end.
+
+**Why accept more false alarms?** A missed hazard such as a coin battery can mean choking, while a false alarm costs a glance at the phone. The 0.30 threshold gives the fewest false boxes among thresholds that keep overall recall at or above 0.85 on validation. At 0.40, recall falls to 0.829. The 0.85 target is our own criterion, not a safety standard, and alert fatigue in real homes is not measured. The app limits repeat alerts with a 1.5 s minimum duration and a 60 s cooldown.
+
+**Why a COCO person detector, not a child detector?** For the demo, any detected person stands in for the child. It does not identify age. The rest of the pipeline only needs a person box, so it can be swapped later.
+
+**Why relative distance, not metres?** Metres need a calibrated camera. Dividing by the person's box height needs no calibration, but it is only a heuristic.
+
+**Are the risk weights validated?** No. They are set by hand from severity, and so are the zone cut-offs and depth weight. Known issue: pen caps share the low pen weight (0.30).
+
+**Does SAFE mean the scene is safe?** No. It also appears when nothing is detected or depth is stale.
+
+**What has not been tested?** Real-camera footage, empty-room false alarms, camera-to-notification delay, and any user study with real caregivers.
 
 ## References
 

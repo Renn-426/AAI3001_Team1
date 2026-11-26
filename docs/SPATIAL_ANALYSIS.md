@@ -65,6 +65,32 @@ planar_distance = pixel_gap / person_box_height
 
 Normalising by person height gives a relative unit. For example, a 60-pixel gap beside a 300-pixel-tall person gives 0.20 person-box heights. This reduces sensitivity to uniform image scaling, but not to posture, truncated boxes, perspective or incorrect person localisation. It is not a calibrated reach model, and overlapping 2D boxes do not prove physical contact.
 
+### Worked example: gap ÷ person height
+
+The app does not measure metres. It measures the gap between the person's box and the hazard's box, then divides it by the person's box height. Dividing by the person's height makes the result independent of how far the camera is, so no camera calibration is needed.
+
+**Example.** The person's box is 300 px tall. A coin battery's box is 60 px from the edge of the person's box.
+
+- Distance = 60 ÷ 300 = **0.20 person-heights**
+- 0.20 is below 0.5, so the geometric zone is **CRITICAL**
+- With no depth gap, proximity = 1 − 0.20 / 3.0 ≈ 0.93, and score = 0.93 × 1.0 (coin battery weight) ≈ **0.93**
+
+If the same person stood twice as close to the camera (box 600 px tall) with the object 120 px away, the answer is still 0.20, so the zone does not change.
+
+**Visual example** (side view, not to scale):
+
+    +-----------+
+    |           |
+    |  person   |                +------+
+    |  box      |<-- 60 px gap ->| coin |
+    |  (300 px  |                | batt |
+    |   tall)   |                +------+
+    +-----------+
+
+    distance = 60 / 300 = 0.20 person-heights  ->  CRITICAL
+
+If the two boxes overlap, the gap is 0. Depth, when available, is added as a separate distance term (see the next section).
+
 ## Relative-depth sampling and adjustment
 
 Depth Anything V2 Small is loaded and reused. The implementation sets depth input dimensions to **252 × 252** for the processing trade-off recorded in the code. No end-to-end speed guarantee follows from that setting.
