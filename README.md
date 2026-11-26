@@ -238,7 +238,7 @@ See [spatial assumptions and remaining checks](docs/SPATIAL_ANALYSIS.md#seven-cl
 
 ## Scalability
 
-These are design properties, not tested results.
+These are the ways we could scale the project in future.
 
 - **New hazards:** add labels, update the class mapping, and retrain. The rest of the pipeline stays the same.
 - **Modular:** the hazard, person and depth models can each be swapped or upgraded independently.
