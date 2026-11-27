@@ -2,7 +2,7 @@
 
 A team computer-vision prototype combining hazard detection, a person reference, relative-depth/spatial analysis, a Streamlit interface and Telegram caregiver alerts.
 
-**Demonstration video:** *(link coming soon)*
+**Demonstration video:** [Watch on YouTube](https://youtu.be/JqCActB0sjY)
 
 ## Project overview
 
